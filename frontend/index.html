@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Avatar - Obama</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/livekit-client/2.5.8/livekit-client.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 900px;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .connection-form {
+            margin-bottom: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-disconnect {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            margin-top: 10px;
+        }
+
+        .video-container {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .video-container.active {
+            display: block;
+        }
+
+        .video-wrapper {
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .control-btn {
+            flex: 1;
+            min-width: 120px;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .control-btn.mute {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .control-btn.unmute {
+            background: #51cf66;
+            color: white;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status.disconnected {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .audio-indicator {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .audio-level {
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .audio-level-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #51cf66, #40c057);
+            width: 0%;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎙️ AI Avatar - Obama</h1>
+            <p>Speak naturally and get real-time responses</p>
+        </div>
+
+        <div class="content">
+            <div id="connectionForm" class="connection-form">
+                <div class="form-group">
+                    <label for="wsUrl">LiveKit Server URL</label>
+                    <input type="text" id="wsUrl" placeholder="wss://your-livekit-server.com" value="ws://localhost:7880">
+                </div>
+
+                <div class="form-group">
+                    <label for="token">Access Token</label>
+                    <input type="text" id="token" placeholder="Your LiveKit token">
+                </div>
+
+                <button class="btn" id="connectBtn">Connect to Avatar</button>
+            </div>
+
+            <div id="status" class="status hidden"></div>
+
+            <div id="videoContainer" class="video-container">
+                <div class="video-wrapper">
+                    <video id="remoteVideo" autoplay playsinline></video>
+                </div>
+
+                <div class="audio-indicator">
+                    <div>🎤 Your microphone level</div>
+                    <div class="audio-level">
+                        <div class="audio-level-bar" id="audioLevelBar"></div>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <button class="control-btn unmute" id="muteBtn">🎤 Mute Microphone</button>
+                    <button class="btn btn-disconnect" id="disconnectBtn">Disconnect</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const LiveKit = window.LivekitClient;
+        
+        let room = null;
+        let audioTrack = null;
+        let isMuted = false;
+
+        const elements = {
+            wsUrl: document.getElementById('wsUrl'),
+            token: document.getElementById('token'),
+            connectBtn: document.getElementById('connectBtn'),
+            disconnectBtn: document.getElementById('disconnectBtn'),
+            muteBtn: document.getElementById('muteBtn'),
+            connectionForm: document.getElementById('connectionForm'),
+            videoContainer: document.getElementById('videoContainer'),
+            remoteVideo: document.getElementById('remoteVideo'),
+            status: document.getElementById('status'),
+            audioLevelBar: document.getElementById('audioLevelBar')
+        };
+
+        function showStatus(message, type) {
+            elements.status.textContent = message;
+            elements.status.className = `status ${type}`;
+            elements.status.classList.remove('hidden');
+        }
+
+        function hideStatus() {
+            elements.status.classList.add('hidden');
+        }
+
+        async function connect() {
+            const wsUrl = elements.wsUrl.value.trim();
+            const token = elements.token.value.trim();
+
+            if (!wsUrl || !token) {
+                showStatus('Please enter both server URL and token', 'error');
+                return;
+            }
+
+            try {
+                showStatus('Connecting to room...', 'connecting');
+                elements.connectBtn.disabled = true;
+
+                room = new LiveKit.Room({
+                    adaptiveStream: true,
+                    dynacast: true,
+                    videoCaptureDefaults: {
+                        resolution: LiveKit.VideoPresets.h720.resolution,
+                    },
+                });
+
+                // Set up event listeners
+                room.on(LiveKit.RoomEvent.TrackSubscribed, handleTrackSubscribed);
+                room.on(LiveKit.RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
+                room.on(LiveKit.RoomEvent.Disconnected, handleDisconnect);
+                room.on(LiveKit.RoomEvent.LocalTrackPublished, handleLocalTrackPublished);
+
+                // Connect to room
+                await room.connect(wsUrl, token);
+                
+                showStatus('Connected! Enabling microphone...', 'connecting');
+
+                // Enable microphone
+                await room.localParticipant.setMicrophoneEnabled(true);
+                
+                showStatus('Connected and ready!', 'connected');
+                
+                // Update UI
+                elements.connectionForm.classList.add('hidden');
+                elements.videoContainer.classList.add('active');
+
+                // Start audio level monitoring
+                startAudioLevelMonitoring();
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                showStatus(`Connection failed: ${error.message}`, 'error');
+                elements.connectBtn.disabled = false;
+            }
+        }
+
+        function handleTrackSubscribed(track, publication, participant) {
+            console.log('Track subscribed:', track.kind, 'from', participant.identity);
+            
+            if (track.kind === 'video') {
+                const element = track.attach();
+                elements.remoteVideo.replaceWith(element);
+                element.id = 'remoteVideo';
+                console.log('Video track attached');
+            }
+        }
+
+        function handleTrackUnsubscribed(track, publication, participant) {
+            console.log('Track unsubscribed:', track.kind);
+            track.detach();
+        }
+
+        function handleLocalTrackPublished(publication, participant) {
+            console.log('Local track published:', publication.kind);
+            if (publication.kind === 'audio') {
+                audioTrack = publication.track;
+            }
+        }
+
+        function handleDisconnect() {
+            console.log('Disconnected from room');
+            showStatus('Disconnected from room', 'disconnected');
+            resetUI();
+        }
+
+        async function disconnect() {
+            if (room) {
+                await room.disconnect();
+                room = null;
+            }
+            resetUI();
+        }
+
+        function resetUI() {
+            elements.connectionForm.classList.remove('hidden');
+            elements.videoContainer.classList.remove('active');
+            elements.connectBtn.disabled = false;
+            isMuted = false;
+            elements.muteBtn.textContent = '🎤 Mute Microphone';
+            elements.muteBtn.className = 'control-btn unmute';
+        }
+
+        async function toggleMute() {
+            if (!room) return;
+
+            isMuted = !isMuted;
+            await room.localParticipant.setMicrophoneEnabled(!isMuted);
+
+            if (isMuted) {
+                elements.muteBtn.textContent = '🔇 Unmute Microphone';
+                elements.muteBtn.className = 'control-btn mute';
+            } else {
+                elements.muteBtn.textContent = '🎤 Mute Microphone';
+                elements.muteBtn.className = 'control-btn unmute';
+            }
+        }
+
+        function startAudioLevelMonitoring() {
+            setInterval(() => {
+                if (room && audioTrack && !isMuted) {
+                    // Simulate audio level (in production, you'd get this from the actual track)
+                    const level = Math.random() * 100;
+                    elements.audioLevelBar.style.width = `${level}%`;
+                } else {
+                    elements.audioLevelBar.style.width = '0%';
+                }
+            }, 100);
+        }
+
+        // Event listeners
+        elements.connectBtn.addEventListener('click', connect);
+        elements.disconnectBtn.addEventListener('click', disconnect);
+        elements.muteBtn.addEventListener('click', toggleMute);
+
+        // Allow Enter key to connect
+        elements.token.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') connect();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Python cache
+__pycache__/
+
+dataset/
+checkpoint/
+idle_cache/
+result/
+syncnet_ckpt/mydata/
+evaluation/results/

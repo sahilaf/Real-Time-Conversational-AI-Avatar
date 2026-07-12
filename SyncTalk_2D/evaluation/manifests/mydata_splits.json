@@ -1,0 +1,33 @@
+{
+  "dataset_name": "mydata",
+  "dataset_dir": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\SyncTalk_2D\\dataset\\mydata",
+  "mode": "ave",
+  "fps": 25,
+  "created_by": "evaluation/scripts/create_manifest.py",
+  "counts": {
+    "frames": 8000,
+    "landmarks": 8000,
+    "audio_features": 7998,
+    "usable_aligned_frames": 7997
+  },
+  "splits": {
+    "train": {
+      "start": 0,
+      "end": 6396,
+      "count": 6397
+    },
+    "val": {
+      "start": 6397,
+      "end": 7195,
+      "count": 799
+    },
+    "test": {
+      "start": 7196,
+      "end": 7996,
+      "count": 801
+    }
+  },
+  "issues": [
+    "Audio feature length diagnostic: aud count - 1 = 7997, frame count = 8000."
+  ]
+}

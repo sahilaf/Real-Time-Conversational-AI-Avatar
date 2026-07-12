@@ -1,0 +1,14 @@
+{
+  "dataset_name": "May",
+  "mode": "ave",
+  "fps": 25,
+  "dataset_dir": "dataset/May",
+  "checkpoint_path": "checkpoint/May/latest",
+  "syncnet_checkpoint_path": "syncnet_ckpt/May/latest",
+  "audio_path": "demo/talk_hb.wav",
+  "generated_video_path": "result/May_talk_hb_99.mp4",
+  "split": "test",
+  "train_ratio": 0.8,
+  "val_ratio": 0.1,
+  "device": "auto"
+}

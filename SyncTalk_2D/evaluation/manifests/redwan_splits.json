@@ -1,0 +1,33 @@
+{
+  "dataset_name": "redwan",
+  "dataset_dir": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\SyncTalk_2D\\dataset\\redwan",
+  "mode": "ave",
+  "fps": 25,
+  "created_by": "evaluation/scripts/create_manifest.py",
+  "counts": {
+    "frames": 7717,
+    "landmarks": 7717,
+    "audio_features": 7715,
+    "usable_aligned_frames": 7714
+  },
+  "splits": {
+    "train": {
+      "start": 0,
+      "end": 6170,
+      "count": 6171
+    },
+    "val": {
+      "start": 6171,
+      "end": 6941,
+      "count": 771
+    },
+    "test": {
+      "start": 6942,
+      "end": 7713,
+      "count": 772
+    }
+  },
+  "issues": [
+    "Audio feature length diagnostic: aud count - 1 = 7714, frame count = 7717."
+  ]
+}

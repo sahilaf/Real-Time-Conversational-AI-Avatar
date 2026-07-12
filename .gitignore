@@ -1,0 +1,49 @@
+# ---- Secrets ----
+.env
+*.env
+!.env.example
+
+# ---- Local planning/research docs (kept local, not published) ----
+research/
+docs/
+
+# ---- Large model weights (download separately; see README checkpoints link) ----
+*.pth
+*.pth.tar
+*.onnx
+SyncTalk_2D/syncnet_ckpt/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.ipynb_checkpoints/
+
+# ---- Virtual environments (large, machine-specific) ----
+agent/venv/
+frontend/venv/
+
+# ---- IDE / OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- SyncTalk_2D generated artifacts (large / per-machine) ----
+SyncTalk_2D/dataset/
+SyncTalk_2D/checkpoint/
+SyncTalk_2D/idle_cache/
+SyncTalk_2D/result/
+SyncTalk_2D/syncnet_ckpt/mydata/
+SyncTalk_2D/evaluation/results/
+SyncTalk_2D/evaluation/runs/
+
+# Large local demo/test audio
+SyncTalk_2D/demo/test.wav
