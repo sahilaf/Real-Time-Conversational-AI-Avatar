@@ -57,22 +57,36 @@ Fydp_v2/
 ├── SyncTalk_2D/                        # 🎭 2D Avatar Model (Lip-Sync Engine)
 │   ├── avatar_server_ws.py             # FastAPI WebSocket server for avatar rendering
 │   ├── synctalk_server.py              # Alternative HTTP-based avatar server
-│   ├── unet.py                         # UNet model (standard resolution)
 │   ├── unet_328.py                     # UNet model (328px high-resolution)
 │   ├── utils.py                        # Audio encoder, dataset utils, feature extraction
-│   ├── train.py / train_328.py         # Training scripts
-│   ├── inference.py / inference_328.py # Offline inference scripts
-│   ├── syncnet.py / syncnet_328.py     # Lip-sync evaluation (SyncNet)
-│   ├── datasetsss.py                   # Dataset loader
-│   ├── evaluate_synctalk.py            # Evaluation metrics
+│   ├── train_328.py                    # Training script
+│   ├── inference_328.py                # Offline inference script
+│   ├── syncnet_328.py                  # Lip-sync expert (SyncNet)
+│   ├── datasetsss_328.py               # Dataset loader
+│   ├── training_328.sh                 # End-to-end training driver
+│   ├── evaluation/                     # Evaluation toolkit
+│   │   ├── scripts/                    #   create_manifest, eval_reconstruction_328,
+│   │   │                               #   eval_sync_328, benchmark_inference_328, make_report
+│   │   ├── manifests/                  #   train/val/test frame splits per dataset
+│   │   ├── runs/                       #   raw per-run metric outputs
+│   │   └── reports/                    #   aggregated Markdown reports
 │   ├── checkpoint/                     # Trained model checkpoints
 │   ├── dataset/                        # Training data (video frames + landmarks)
 │   ├── model/                          # Pre-trained audio encoder checkpoint
 │   ├── idle_cache/                     # Cached idle animation frames
 │   └── README.md                       # SyncTalk_2D setup instructions
 │
+├── research/                           # 📐 Research track (local-only, gitignored)
+│   ├── PLAN.md                         # The single research plan (thesis, contributions, constraints)
+│   ├── CHECKLIST.md                    # Step-by-step execution checklist
+│   └── env/                            # Frozen dependency versions
+│
 └── README.md                           # This file
 ```
+
+> **Research track:** work toward the Bangla talking-head model is planned in
+> [`research/PLAN.md`](research/PLAN.md) and executed via
+> [`research/CHECKLIST.md`](research/CHECKLIST.md). Both are gitignored (local only).
 
 ---
 
