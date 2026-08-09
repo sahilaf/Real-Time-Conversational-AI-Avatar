@@ -285,15 +285,21 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
     val_dataset = Dataset(dataset_dir, mode=mode, split="val")
     # persistent_workers keeps the workers alive across epochs. Without it
     # Windows re-spawns a full Python+torch process per worker every epoch,
-    # which is slow and spikes RAM. Validation runs with 0 workers so we
-    # never hold two sets of worker processes at once.
+    # which is slow and spikes RAM.
+    #
+    # Validation gets half the workers: 0 on a 2-worker laptop (so we never
+    # hold two sets of worker processes on 7.4 GB of RAM), but 4 when Colab
+    # passes 8. Running validation single-threaded there cost ~11 s an epoch,
+    # which is ~55 minutes across a 300-epoch run.
+    val_workers = num_workers // 2
     train_data_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
         num_workers=num_workers,
         persistent_workers=(num_workers > 0))
     val_data_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=0)
+        num_workers=val_workers,
+        persistent_workers=(val_workers > 0))
     model = SyncNet_color(mode).cuda()
     # --init warm-starts weights only (e.g. person fine-tune from the
     # universal Bangla SyncNet). --resume continues an interrupted run.

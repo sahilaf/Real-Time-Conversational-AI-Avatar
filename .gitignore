@@ -47,3 +47,8 @@ SyncTalk_2D/evaluation/runs/
 
 # Large local demo/test audio
 SyncTalk_2D/demo/test.wav
+
+# ---- Data bundles built for Colab upload (large) ----
+*.tar
+*.tar.gz
+*.zip

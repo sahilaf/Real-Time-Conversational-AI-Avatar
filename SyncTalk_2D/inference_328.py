@@ -26,7 +26,7 @@ parser.add_argument('--start_frame', type=int, default=0)
 parser.add_argument('--parsing', type=bool, default=False)
 parser.add_argument('--ssl_model', type=str, default="facebook/wav2vec2-xls-r-300m",
                     help="Encoder for --asr ssl. Must match what training used.")
-parser.add_argument('--ssl_layer', type=int, default=-1,
+parser.add_argument('--ssl_layer', type=int, default=12,
                     help="Hidden layer for --asr ssl. Must match what training used.")
 args = parser.parse_args()
 
@@ -60,8 +60,19 @@ if mode == "ssl":
     # Bangla SSL encoder. Same output convention as the ave path below
     # (25 fps rows, first/last duplicated), so everything downstream matches.
     from extract_ssl_features import extract as extract_ssl
+    # Reuse the normalisation the model was trained with. Recomputing per-clip
+    # stats on new audio would feed the model differently-scaled features.
+    stats = None
+    stats_path = os.path.join(dataset_dir, "aud_ssl_stats.npz")
+    if os.path.exists(stats_path):
+        z = np.load(stats_path, allow_pickle=True)
+        stats = (z["mean"], z["std"])
+        print(f"using training-time SSL stats from {stats_path} (layer {z['layer']})")
+    else:
+        print(f"WARNING: {stats_path} not found - normalising on this clip instead. "
+              "Scores will be slightly off unless the clip is long.")
     audio_feats = extract_ssl(audio_path, model_name=args.ssl_model,
-                              layer=args.ssl_layer, device=device, fp16=True)
+                              layer=args.ssl_layer, device=device, fp16=True, stats=stats)
 else:
     model = AudioEncoder().to(device).eval()
     ckpt = torch.load(os.path.join(".", "model", "checkpoints", "audio_visual_encoder.pth"))

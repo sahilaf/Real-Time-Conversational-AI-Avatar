@@ -45,6 +45,14 @@ VIDEO_FPS = 25
 SSL_HZ = 50
 SAMPLE_RATE = 16000
 
+# Layer 24 (the last) of a contrastively-pretrained XLS-R is collapsed: measured
+# per-dim std 0.028 and frame-to-frame variation 0.39x the ave baseline, i.e.
+# almost no temporal signal for SyncNet to key on. Middle layers carry ~2x MORE
+# variation than ave. Measured on redwan (adj-delta/magnitude vs ave):
+#   layer  3: 2.05x   9: 1.98x   12: 1.96x   18: 1.95x   24: 0.39x
+# 12 is the conventional choice for phonetic content in wav2vec2-family models.
+DEFAULT_LAYER = 12
+
 _CACHE = {}
 
 
@@ -165,12 +173,20 @@ def to_video_rate(feats, target_len):
     return x.squeeze(0).t().contiguous()                       # [target_len, D]
 
 
-def extract(wav_path, model_name=DEFAULT_MODEL, layer=-1, device=None, fp16=False,
-            target_core=None, chunk_sec=30.0, overlap_sec=2.0, verbose=True):
+def extract(wav_path, model_name=DEFAULT_MODEL, layer=DEFAULT_LAYER, device=None, fp16=False,
+            target_core=None, chunk_sec=30.0, overlap_sec=2.0, verbose=True,
+            standardize=True, stats=None, return_stats=False):
     """Return float32 [N, D] features at 25 fps, first/last rows duplicated.
 
     target_core: number of real video frames (before the 2 pad rows). Defaults
     to round(duration * 25), which is what you want for fresh inference audio.
+
+    standardize: per-dimension zero-mean/unit-variance. Raw hidden-state scale
+    varies ~100x across layers, so without this the reshape geometry and the
+    downstream BatchNorm behave very differently depending on --layer.
+    stats: (mean, std) to reuse instead of computing. Training saves its stats
+    so inference applies the SAME normalisation - otherwise train and test see
+    differently-scaled features.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -190,13 +206,53 @@ def extract(wav_path, model_name=DEFAULT_MODEL, layer=-1, device=None, fp16=Fals
         print(f"encoder    : {model_name} (layer {layer}) on {device}")
 
     model, fe = load_encoder(model_name, device)
-    feats = _encode(wav, model, fe, device, layer, chunk_sec, overlap_sec, fp16)
+
+    # output_hidden_states=True retains all 25 layers, so peak memory is far
+    # higher than a plain forward. On a 4 GB card 30 s chunks do not fit; halve
+    # until they do rather than failing outright.
+    feats = None
+    cs, ov = chunk_sec, overlap_sec
+    while feats is None:
+        try:
+            feats = _encode(wav, model, fe, device, layer, cs, ov, fp16)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            if cs > 5.0:
+                cs, ov = cs / 2, max(ov / 2, 0.5)
+                if verbose:
+                    print(f"  OOM - retrying with {cs:.1f}s chunks (overlap {ov:.1f}s)")
+                continue
+            # A 300M encoder in fp32 plus 25 retained hidden states does not fit
+            # in 4 GB next to the CUDA context. This is a one-time offline job,
+            # so fall back to CPU rather than failing.
+            if verbose:
+                print("  OOM at minimum chunk size - falling back to CPU "
+                      "(slower, but this only runs once per clip)")
+            device = torch.device("cpu")
+            model, fe = load_encoder(model_name, device)
+            cs, ov = chunk_sec, overlap_sec
+            fp16 = False
     if verbose:
         print(f"raw        : {tuple(feats.shape)}  (~{feats.shape[0]/max(duration,1e-9):.1f} Hz)")
 
-    core = to_video_rate(feats, target_core)
-    padded = torch.cat([core[:1], core, core[-1:]], dim=0)
-    return padded.numpy().astype(np.float32)
+    core = to_video_rate(feats, target_core).numpy().astype(np.float32)
+
+    used_stats = None
+    if standardize:
+        if stats is not None:
+            mean, std = stats
+        else:
+            mean = core.mean(0)
+            std = core.std(0)
+        std = np.where(std < 1e-6, 1.0, std)      # dead dims stay zero, no blow-up
+        core = (core - mean) / std
+        used_stats = (mean.astype(np.float32), std.astype(np.float32))
+        if verbose:
+            print(f"standardised: per-dim std {core.std(0).mean():.4f} "
+                  f"(was {std.mean():.4f})")
+
+    padded = np.concatenate([core[:1], core, core[-1:]], axis=0).astype(np.float32)
+    return (padded, used_stats) if return_stats else padded
 
 
 def main():
@@ -206,9 +262,13 @@ def main():
     ap.add_argument("--out", required=True, help="Output .npy, e.g. dataset/redwan/aud_ssl.npy")
     ap.add_argument("--model", default=DEFAULT_MODEL,
                     help=f"HuggingFace encoder id. Default: {DEFAULT_MODEL}")
-    ap.add_argument("--layer", type=int, default=-1,
-                    help="Hidden layer to take. -1 = last. Middle layers often carry more "
-                         "phonetic detail; worth trying if ssl loses to ave.")
+    ap.add_argument("--layer", type=int, default=DEFAULT_LAYER,
+                    help=f"Hidden layer to take (default {DEFAULT_LAYER}). Do NOT use -1: the "
+                         "final layer of a pretrained-only XLS-R is collapsed (~100x less "
+                         "per-dim variance than middle layers) and SyncNet cannot learn from it.")
+    ap.add_argument("--no-standardize", action="store_true",
+                    help="Skip per-dim normalisation. Not recommended - raw scale varies "
+                         "~100x by layer.")
     ap.add_argument("--match", default=None,
                     help="Lock output length to this .npy (default: sibling aud_ave.npy if "
                          "present). Guarantees drop-in compatibility.")
@@ -233,9 +293,10 @@ def main():
         target_total = None
         print(f"length     : {match_path.name} not found, deriving from duration")
 
-    arr = extract(args.wav, model_name=args.model, layer=args.layer, device=args.device,
-                  fp16=args.fp16, target_core=target_core,
-                  chunk_sec=args.chunk_sec, overlap_sec=args.overlap_sec)
+    arr, stats = extract(args.wav, model_name=args.model, layer=args.layer, device=args.device,
+                         fp16=args.fp16, target_core=target_core,
+                         chunk_sec=args.chunk_sec, overlap_sec=args.overlap_sec,
+                         standardize=not args.no_standardize, return_stats=True)
 
     # --- verify --------------------------------------------------------------
     if target_total is not None and arr.shape[0] != target_total:
@@ -255,6 +316,11 @@ def main():
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(out_path, arr)
+    if stats is not None:
+        # Inference must apply the SAME normalisation the model trained on.
+        stats_path = out_path.with_name(out_path.stem + "_stats.npz")
+        np.savez(stats_path, mean=stats[0], std=stats[1], layer=args.layer, model=args.model)
+        print(f"stats      : {stats_path.name}  (reused at inference time)")
     print(f"saved      : {out_path}  shape={arr.shape} dtype={arr.dtype}")
     print(f"per-frame dim = {arr.shape[1]}  ->  window of 16 frames = {16 * arr.shape[1]} values")
     if arr.shape[1] != 1024:
