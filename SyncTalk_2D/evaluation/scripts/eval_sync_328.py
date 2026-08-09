@@ -1,6 +1,8 @@
 import argparse
 from pathlib import Path
 
+from tqdm import tqdm
+
 from common_eval import (
     add_project_to_path,
     choose_device,
@@ -47,7 +49,7 @@ def main():
     parser.add_argument("--video-path", required=True, help="Generated mp4 to score.")
     parser.add_argument("--audio-path", required=True, help="Audio wav used for the generated video.")
     parser.add_argument("--syncnet-checkpoint", required=True, help="SyncNet .pth, checkpoint dir, or .../latest.")
-    parser.add_argument("--mode", default="ave", choices=["ave", "hubert", "wenet"])
+    parser.add_argument("--mode", default="ave", choices=["ave", "hubert", "wenet", "ssl"])
     parser.add_argument("--device", default="auto")
     parser.add_argument("--offset-min", type=int, default=-15)
     parser.add_argument("--offset-max", type=int, default=15)
@@ -100,10 +102,13 @@ def main():
 
     offset_rows = []
     frame_rows = []
-    with torch.no_grad():
+    n_offsets = args.offset_max - args.offset_min + 1
+    total_pairs = n_offsets * len(video_frames)
+    with torch.no_grad(), tqdm(total=total_pairs, desc="Sync sweep", unit="pair") as pbar:
         for offset in range(args.offset_min, args.offset_max + 1):
             scores = []
             for frame_idx, frame in enumerate(video_frames):
+                pbar.update(1)
                 audio_idx = frame_idx + offset
                 if audio_idx < 0 or audio_idx >= audio_features.shape[0]:
                     continue
@@ -130,6 +135,10 @@ def main():
                     frame_rows.append({"frame": frame_idx, "audio_frame": audio_idx, "sync_score": score})
 
             summary = summarize(scores)
+            pbar.set_postfix(**{
+                "offset": offset,
+                "mean": f"{summary['mean']:.4f}" if summary["mean"] is not None else "n/a",
+            })
             offset_rows.append({
                 "offset": offset,
                 "count": summary["count"],

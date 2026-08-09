@@ -6,6 +6,7 @@ import cv2
 import os
 import numpy as np
 from torch import optim
+from tqdm import tqdm
 import random
 import argparse
 
@@ -30,6 +31,8 @@ class Dataset(object):
             audio_feats_path = dataset_dir+"/aud_hu.npy"
         if mode=="ave":
             audio_feats_path = dataset_dir+"/aud_ave.npy"
+        if mode=="ssl":
+            audio_feats_path = dataset_dir+"/aud_ssl.npy"
         self.mode = mode
         self.audio_feats = np.load(audio_feats_path)
         self.audio_feats = self.audio_feats.astype(np.float32)
@@ -122,6 +125,9 @@ class Dataset(object):
 
         if self.mode=="ave":
             audio_feat = audio_feat.reshape(32,16,16)
+        elif self.mode=="ssl":
+            # 16 frames x 1024 dims = 16384 = 16*32*32
+            audio_feat = audio_feat.reshape(16,32,32)
         else:
             audio_feat = audio_feat.reshape(32,32,32)
 
@@ -208,6 +214,10 @@ class SyncNet_color(nn.Module):
         if mode == "ave":
             p1 = 32
             p2 = 1
+        if mode == "ssl":
+            # [16,32,32] input - same spatial path as hubert, fewer channels.
+            p1 = 16
+            p2 = (2, 2)
         self.audio_encoder = nn.Sequential(
             Conv2d(p1, 128, kernel_size=3, stride=1, padding=1),
             Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
@@ -255,7 +265,7 @@ def evaluate(model, data_loader):
     losses = []
     pos_sims, neg_sims = [], []
     with torch.no_grad():
-        for imgT, audioT, y in data_loader:
+        for imgT, audioT, y in tqdm(data_loader, desc="  validating", unit="batch", leave=False):
             imgT, audioT, y = imgT.cuda(), audioT.cuda(), y.cuda()
             a_emb, f_emb = model(imgT, audioT)
             losses.append(cosine_loss(a_emb, f_emb, y).item())
@@ -266,38 +276,73 @@ def evaluate(model, data_loader):
     mean = lambda xs: sum(xs) / len(xs) if xs else float("nan")
     return mean(losses), mean(pos_sims), mean(neg_sims)
 
-def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4, lr=0.001):
+def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4, lr=0.001,
+          amp=False, resume="", init=""):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
     train_dataset = Dataset(dataset_dir, mode=mode, split="train")
     val_dataset = Dataset(dataset_dir, mode=mode, split="val")
+    # persistent_workers keeps the workers alive across epochs. Without it
+    # Windows re-spawns a full Python+torch process per worker every epoch,
+    # which is slow and spikes RAM. Validation runs with 0 workers so we
+    # never hold two sets of worker processes at once.
     train_data_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers)
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0))
     val_data_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers)
+        num_workers=0)
     model = SyncNet_color(mode).cuda()
+    # --init warm-starts weights only (e.g. person fine-tune from the
+    # universal Bangla SyncNet). --resume continues an interrupted run.
+    if init:
+        model.load_state_dict(torch.load(init, map_location="cuda"))
+        print(f"Initialised weights from {init}.")
     optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad],
                            lr=lr)
+
+    use_amp = amp and torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    if use_amp:
+        print("AMP enabled (fp16 autocast). Validation stays fp32.")
+
     best_val_loss = float("inf")
+    start_epoch = 0
     log_path = os.path.join(save_dir, "train_log.csv")
-    with open(log_path, "w") as f:
-        f.write("epoch,train_loss,val_loss,val_pos_sim,val_neg_sim\n")
-    for epoch in range(epochs):
+    if resume:
+        ckpt = torch.load(resume, map_location="cuda")
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        if "scaler" in ckpt and use_amp:
+            scaler.load_state_dict(ckpt["scaler"])
+        start_epoch = ckpt["epoch"]
+        best_val_loss = ckpt.get("best_val_loss", float("inf"))
+        print(f"Resumed from {resume} at epoch {start_epoch}.")
+    if not resume or not os.path.exists(log_path):
+        with open(log_path, "w") as f:
+            f.write("epoch,train_loss,val_loss,val_pos_sim,val_neg_sim\n")
+    for epoch in range(start_epoch, epochs):
         epoch_losses = []
-        for batch in train_data_loader:
-            imgT, audioT, y = batch
-            imgT = imgT.cuda()
-            audioT = audioT.cuda()
-            y = y.cuda()
-            optimizer.zero_grad()
-            audio_embedding, face_embedding = model(imgT, audioT)
-            loss = cosine_loss(audio_embedding, face_embedding, y)
-            loss.backward()
-            optimizer.step()
-            epoch_losses.append(loss.item())
+        with tqdm(total=len(train_dataset), desc=f'Epoch {epoch+1}/{epochs}', unit='img') as p:
+            for batch in train_data_loader:
+                imgT, audioT, y = batch
+                imgT = imgT.cuda()
+                audioT = audioT.cuda()
+                y = y.cuda()
+                optimizer.zero_grad()
+                with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                    audio_embedding, face_embedding = model(imgT, audioT)
+                # BCELoss is unsafe under autocast, so score in fp32.
+                loss = cosine_loss(audio_embedding.float(), face_embedding.float(), y)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                epoch_losses.append(loss.item())
+                p.set_postfix(**{'loss': f"{loss.item():.4f}",
+                                 'avg': f"{sum(epoch_losses)/len(epoch_losses):.4f}"})
+                p.update(imgT.shape[0])
         train_loss = sum(epoch_losses) / len(epoch_losses)
         val_loss, val_pos, val_neg = evaluate(model, val_data_loader)
         print(f"epoch {epoch+1}  train {train_loss:.4f}  val {val_loss:.4f}  "
@@ -309,6 +354,14 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
             torch.save(model.state_dict(), os.path.join(save_dir, "best_val.pth"))
         if (epoch + 1) % 25 == 0:
             torch.save(model.state_dict(), os.path.join(save_dir, str(epoch+1)+'.pth'))
+        # last.pth carries the full resume state. best_val.pth and the numbered
+        # files stay plain state_dicts so eval_sync_328.py loads them unchanged.
+        torch.save({"epoch": epoch + 1,
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scaler": scaler.state_dict(),
+                    "best_val_loss": best_val_loss},
+                   os.path.join(save_dir, "last.pth"))
 
 
 
@@ -319,8 +372,16 @@ if __name__ == "__main__":
     parser.add_argument('--asr', default='ave', type=str)
     parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--batch_size', default=16, type=int)
-    parser.add_argument('--num_workers', default=4, type=int)
+    # 2 is right for a 7.4 GB RAM laptop; raise to 8 on Colab.
+    parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('--amp', action='store_true',
+                        help="Mixed precision. Big speedup on A100; changes numerics, so off by default.")
+    parser.add_argument('--resume', default="", type=str,
+                        help="Path to a last.pth to continue an interrupted run.")
+    parser.add_argument('--init', default="", type=str,
+                        help="Warm-start weights from a checkpoint (e.g. the universal Bangla SyncNet).")
     opt = parser.parse_args()
 
-    train(opt.save_dir, opt.dataset_dir, opt.asr, opt.epochs, opt.batch_size, opt.num_workers, opt.lr)
+    train(opt.save_dir, opt.dataset_dir, opt.asr, opt.epochs, opt.batch_size, opt.num_workers, opt.lr,
+          amp=opt.amp, resume=opt.resume, init=opt.init)

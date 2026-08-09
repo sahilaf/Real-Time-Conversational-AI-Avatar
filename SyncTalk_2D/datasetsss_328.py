@@ -29,7 +29,10 @@ class MyDataset(Dataset):
             self.audio_feats = np.load(img_dir+"/aud_hu.npy")
         if self.mode == "ave":
             self.audio_feats = np.load(img_dir+"/aud_ave.npy")
-            
+        if self.mode == "ssl":
+            self.audio_feats = np.load(img_dir+"/aud_ssl.npy")
+
+
         self.audio_feats = self.audio_feats.astype(np.float32)
         print(img_dir)
         print(self.audio_feats.shape)
@@ -145,6 +148,9 @@ class MyDataset(Dataset):
             audio_feat = audio_feat.reshape(32,32,32)
         if self.mode == "ave":
             audio_feat = audio_feat.reshape(32,16,16)
+        if self.mode == "ssl":
+            # 16 frames x 1024 dims = 16384 = 16*32*32
+            audio_feat = audio_feat.reshape(16,32,32)
         
         return img_concat_T, img_real_T, audio_feat
     

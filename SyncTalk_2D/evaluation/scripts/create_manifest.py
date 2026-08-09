@@ -33,7 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description="Create a SyncTalk_2D evaluation manifest.")
     parser.add_argument("--dataset-name", required=True, help="Dataset/person name, e.g. May.")
     parser.add_argument("--dataset-dir", default=None, help="Defaults to dataset/<dataset-name>.")
-    parser.add_argument("--mode", default="ave", choices=["ave", "hubert", "wenet"])
+    parser.add_argument("--mode", default="ave", choices=["ave", "hubert", "wenet", "ssl"])
     parser.add_argument("--fps", type=int, default=25)
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--val-ratio", type=float, default=0.1)

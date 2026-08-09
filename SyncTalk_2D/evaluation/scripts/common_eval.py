@@ -12,6 +12,7 @@ MODE_AUDIO_FILES = {
     "ave": "aud_ave.npy",
     "hubert": "aud_hu.npy",
     "wenet": "aud_wenet.npy",
+    "ssl": "aud_ssl.npy",
 }
 
 
@@ -71,7 +72,11 @@ def numeric_sort_key(path_or_name):
 def list_numbered_files(directory: Path, suffix: str):
     if not directory.exists():
         return []
-    return sorted(directory.glob(f"*{suffix}"), key=numeric_sort_key)
+    # Only epoch-numbered files. Skips last.pth (a resume bundle, not a plain
+    # state_dict) and best_val.pth - and avoids sorting str against int, which
+    # numeric_sort_key would otherwise produce for non-numeric names.
+    files = [p for p in directory.glob(f"*{suffix}") if re.search(r"-?\d+", p.stem)]
+    return sorted(files, key=numeric_sort_key)
 
 
 def audio_feature_path(dataset_dir: Path, mode: str) -> Path:
@@ -162,6 +167,9 @@ def reshape_audio_feature(audio_feat, mode: str):
         return audio_feat.reshape(256, 16, 32)
     if mode == "ave":
         return audio_feat.reshape(32, 16, 16)
+    if mode == "ssl":
+        # 16 frames x 1024 dims = 16384 = 16*32*32
+        return audio_feat.reshape(16, 32, 32)
     raise ValueError(f"Unsupported mode: {mode}")
 
 

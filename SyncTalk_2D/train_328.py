@@ -25,6 +25,12 @@ def get_args():
     parser.add_argument('--batchsize', type=int, default=8)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--asr', type=str, default="hubert")
+    # 4 suits a 7.4GB RAM laptop; raise to 8 on Colab. Was 32, which OOMs.
+    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--amp', action='store_true',
+                        help="Mixed precision. Big speedup on A100; changes numerics, so off by default.")
+    parser.add_argument('--resume', type=str, default="",
+                        help="Path to a last.pth to continue an interrupted run.")
 
     return parser.parse_args()
 
@@ -43,6 +49,11 @@ class PerceptualLoss():
             model.add_module(str(i),layer)
             if i == conv_3_3_layer:
                 break
+        # VGG is a fixed feature extractor - nothing ever trains it, so the
+        # gradient buffers it would otherwise allocate are pure waste.
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad = False
         return model
 
     def __init__(self, loss):
@@ -51,8 +62,10 @@ class PerceptualLoss():
 
     def get_loss(self, fakeIm, realIm):
         f_fake = self.contentFunc.forward(fakeIm)
-        f_real = self.contentFunc.forward(realIm)
-        f_real_no_grad = f_real.detach()
+        # The real branch is detached anyway, so building an autograd graph for
+        # it just retains ~700MB of activations until backward. Skip it.
+        with torch.no_grad():
+            f_real_no_grad = self.contentFunc.forward(realIm)
         loss = self.criterion(f_fake, f_real_no_grad)
         return loss
 
@@ -82,14 +95,31 @@ def train(net, epoch, batch_size, lr):
     dataset_dir_list = [args.dataset_dir]
     for dataset_dir in dataset_dir_list:
         dataset = MyDataset(dataset_dir, args.asr)
-        train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=32)
+        train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                                      drop_last=False, num_workers=args.num_workers,
+                                      persistent_workers=(args.num_workers > 0))
         dataloader_list.append(train_dataloader)
         dataset_list.append(dataset)
-    
+
     optimizer = optim.Adam(net.parameters(), lr=lr)
     criterion = nn.L1Loss()
-    
-    for e in range(epoch):
+
+    use_amp = args.amp and torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    if use_amp:
+        print("AMP enabled (fp16 autocast).")
+
+    start_epoch = 0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location="cuda")
+        net.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        if "scaler" in ckpt and use_amp:
+            scaler.load_state_dict(ckpt["scaler"])
+        start_epoch = ckpt["epoch"]
+        print(f"Resumed from {args.resume} at epoch {start_epoch}.")
+
+    for e in range(start_epoch, epoch):
         net.train()
         random_i = random.randint(0, len(dataset_dir_list)-1)
         dataset = dataset_list[random_i]
@@ -101,23 +131,34 @@ def train(net, epoch, batch_size, lr):
                 imgs = imgs.cuda()
                 labels = labels.cuda()
                 audio_feat = audio_feat.cuda()
-                preds = net(imgs, audio_feat)
+                with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                    preds = net(imgs, audio_feat)
+                    if use_syncnet:
+                        a, v = syncnet(preds, audio_feat)
+                    loss_PerceptualLoss = content_loss.get_loss(preds, labels)
+                    loss_pixel = criterion(preds, labels)
+                # BCELoss (inside cosine_loss) is unsafe under autocast, so the
+                # sync term and the final sum are computed in fp32.
                 if use_syncnet:
                     y = torch.ones([preds.shape[0],1]).float().cuda()
-                    a, v = syncnet(preds, audio_feat)
-                    sync_loss = cosine_loss(a, v, y)
-                loss_PerceptualLoss = content_loss.get_loss(preds, labels)
-                loss_pixel = criterion(preds, labels)
-                if use_syncnet:
-                    loss = loss_pixel + loss_PerceptualLoss*0.01 + 10*sync_loss
+                    sync_loss = cosine_loss(a.float(), v.float(), y)
+                    loss = loss_pixel.float() + loss_PerceptualLoss.float()*0.01 + 10*sync_loss
                 else:
-                    loss = loss_pixel + loss_PerceptualLoss*0.01
+                    loss = loss_pixel.float() + loss_PerceptualLoss.float()*0.01
                 p.set_postfix(**{'loss (batch)': loss.item()})
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 p.update(imgs.shape[0])
                 
+        # last.pth is the full resume state. The numbered files stay plain
+        # state_dicts so inference/eval scripts keep loading them unchanged.
+        torch.save({"epoch": e + 1,
+                    "model": net.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scaler": scaler.state_dict()},
+                   os.path.join(save_dir, "last.pth"))
         if (e+1) % 5 == 0:
             torch.save(net.state_dict(), os.path.join(save_dir, str(e)+'.pth'))
         if args.see_res:

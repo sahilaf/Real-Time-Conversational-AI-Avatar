@@ -24,11 +24,22 @@ parser.add_argument('--name', type=str, default="May")
 parser.add_argument('--audio_path', type=str, default="demo/talk_hb.wav")
 parser.add_argument('--start_frame', type=int, default=0)
 parser.add_argument('--parsing', type=bool, default=False)
+parser.add_argument('--ssl_model', type=str, default="facebook/wav2vec2-xls-r-300m",
+                    help="Encoder for --asr ssl. Must match what training used.")
+parser.add_argument('--ssl_layer', type=int, default=-1,
+                    help="Hidden layer for --asr ssl. Must match what training used.")
 args = parser.parse_args()
 
 checkpoint_path = os.path.join(".", "checkpoint", args.name)
-# Get the latest checkpoint file
-checkpoint_files = [f for f in os.listdir(checkpoint_path) if f.endswith('.pth')]
+# Get the latest numbered checkpoint. Only epoch-numbered files are plain
+# state_dicts; last.pth is a resume bundle (model+optimizer+scaler) and would
+# both break int() here and fail load_state_dict below.
+checkpoint_files = [f for f in os.listdir(checkpoint_path)
+                    if f.endswith('.pth') and os.path.splitext(f)[0].isdigit()]
+if not checkpoint_files:
+    raise FileNotFoundError(
+        f"No epoch-numbered .pth in {checkpoint_path}. "
+        "Training saves those every 5 epochs; last.pth alone is not usable here.")
 checkpoint = os.path.join(checkpoint_path, sorted(checkpoint_files, key=lambda x: int(x.split(".")[0]))[-1])
 print(checkpoint)
 
@@ -45,21 +56,28 @@ mode = args.asr
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = AudioEncoder().to(device).eval()
-ckpt = torch.load(os.path.join(".", "model", "checkpoints", "audio_visual_encoder.pth"))
-model.load_state_dict({f'audio_encoder.{k}': v for k, v in ckpt.items()})
-dataset = AudDataset(audio_path)
-data_loader = DataLoader(dataset, batch_size=64, shuffle=False)
-outputs = []
-for mel in data_loader:
-    mel = mel.to(device)
-    with torch.no_grad():
-        out = model(mel)
-    outputs.append(out)
-outputs = torch.cat(outputs, dim=0).cpu()
-first_frame, last_frame = outputs[:1], outputs[-1:]
-audio_feats = torch.cat([first_frame.repeat(1, 1), outputs, last_frame.repeat(1, 1)],
-                            dim=0).numpy()
+if mode == "ssl":
+    # Bangla SSL encoder. Same output convention as the ave path below
+    # (25 fps rows, first/last duplicated), so everything downstream matches.
+    from extract_ssl_features import extract as extract_ssl
+    audio_feats = extract_ssl(audio_path, model_name=args.ssl_model,
+                              layer=args.ssl_layer, device=device, fp16=True)
+else:
+    model = AudioEncoder().to(device).eval()
+    ckpt = torch.load(os.path.join(".", "model", "checkpoints", "audio_visual_encoder.pth"))
+    model.load_state_dict({f'audio_encoder.{k}': v for k, v in ckpt.items()})
+    dataset = AudDataset(audio_path)
+    data_loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    outputs = []
+    for mel in data_loader:
+        mel = mel.to(device)
+        with torch.no_grad():
+            out = model(mel)
+        outputs.append(out)
+    outputs = torch.cat(outputs, dim=0).cpu()
+    first_frame, last_frame = outputs[:1], outputs[-1:]
+    audio_feats = torch.cat([first_frame.repeat(1, 1), outputs, last_frame.repeat(1, 1)],
+                                dim=0).numpy()
 img_dir = os.path.join(dataset_dir, "full_body_img")
 lms_dir = os.path.join(dataset_dir, "landmarks")
 len_img = len([f for f in os.listdir(img_dir) if f.endswith('.jpg')]) - 1
@@ -68,7 +86,7 @@ h, w = exm_img.shape[:2]
 if args.parsing:
     parsing_dir = os.path.join(dataset_dir, "parsing")
 
-if mode=="hubert" or mode=="ave":
+if mode=="hubert" or mode=="ave" or mode=="ssl":
     video_writer = cv2.VideoWriter(temp_save_path, cv2.VideoWriter_fourcc(*'MJPG'), 25, (w, h))
 if mode=="wenet":
     video_writer = cv2.VideoWriter(temp_save_path, cv2.VideoWriter_fourcc(*'MJPG'), 20, (w, h))
@@ -137,6 +155,9 @@ for i in tqdm(range(audio_feats.shape[0])):
         audio_feat = audio_feat.reshape(256,16,32)
     if mode=="ave":
         audio_feat = audio_feat.reshape(32,16,16)
+    if mode=="ssl":
+        # 16 frames x 1024 dims = 16384 = 16*32*32
+        audio_feat = audio_feat.reshape(16,32,32)
     audio_feat = audio_feat[None]
     audio_feat = audio_feat.cuda()
     img_concat_T = img_concat_T.cuda()

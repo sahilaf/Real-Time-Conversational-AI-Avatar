@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--dataset-dir", default=None, help="Defaults to dataset/<dataset-name>.")
     parser.add_argument("--checkpoint", required=True, help="Checkpoint .pth, checkpoint dir, or .../latest.")
     parser.add_argument("--audio-path", required=True)
-    parser.add_argument("--mode", default="ave", choices=["ave", "hubert", "wenet"])
+    parser.add_argument("--mode", default="ave", choices=["ave", "hubert", "wenet", "ssl"])
     parser.add_argument("--device", default="auto")
     parser.add_argument("--start-frame", type=int, default=0)
     parser.add_argument("--max-frames", type=int, default=0)

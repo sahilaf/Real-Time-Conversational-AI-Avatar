@@ -196,6 +196,39 @@ class AudioConvAve(nn.Module):
     
         return x
     
+# 输入维度[B,16,32,32] - Bangla SSL features (16 frames x 1024 dims = 16x32x32).
+# Same spatial path as AudioConvHubert; only the input channel count differs,
+# so it lands on the same [B,512,10,10] bottleneck the fusion expects.
+class AudioConvSSL(nn.Module):
+    def __init__(self):
+        super(AudioConvSSL, self).__init__()
+        ch = [16, 64, 128, 256, 512]
+        self.conv1 = InvertedResidual(ch[0], ch[1], stride=1, use_res_connect=False, expand_ratio=2)
+        self.conv2 = InvertedResidual(ch[1], ch[2], stride=1, use_res_connect=False, expand_ratio=2)
+
+        self.conv3 = nn.Conv2d(ch[2], ch[3], kernel_size=3, padding=1, stride=(2,2))
+        self.bn3 = nn.BatchNorm2d(ch[3])
+
+        self.conv4 = InvertedResidual(ch[3], ch[3], stride=1, use_res_connect=True, expand_ratio=2)
+
+        self.conv5 = nn.Conv2d(ch[3], ch[4], kernel_size=3, padding=3, stride=2)
+        self.bn5 = nn.BatchNorm2d(ch[4])
+        self.relu = nn.ReLU()
+
+        self.conv6 = InvertedResidual(ch[4], ch[4], stride=1, use_res_connect=True, expand_ratio=2)
+        self.conv7 = InvertedResidual(ch[4], ch[4], stride=1, use_res_connect=True, expand_ratio=2)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = self.conv4(x)
+        x = self.relu(self.bn5(self.conv5(x)))
+        x = self.conv6(x)
+        x = self.conv7(x)
+
+        return x
+
 class Model(nn.Module):
     def __init__(self,n_channels=6, mode='hubert'):
         super(Model, self).__init__()
@@ -212,6 +245,9 @@ class Model(nn.Module):
         elif mode=='ave':
             print("ave")
             self.audio_model = AudioConvAve()
+        elif mode=='ssl':
+            print("ssl")
+            self.audio_model = AudioConvSSL()
             
         self.fuse_conv = nn.Sequential(
             DoubleConvDW(ch[4]*2, ch[4], stride=1),
