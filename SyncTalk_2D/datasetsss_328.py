@@ -8,13 +8,17 @@ import random
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
+from utils import apply_mouth_mask, MASK_V2
+
 class MyDataset(Dataset):
-    
-    def __init__(self, img_dir, mode):
-    
+
+    def __init__(self, img_dir, mode, mask_version=MASK_V2):
+
         self.img_path_list = []
         self.lms_path_list = []
         self.mode = mode
+        # Must match what inference and evaluation use - see utils.apply_mouth_mask
+        self.mask_version = mask_version
         
         for i in range(len(os.listdir(img_dir+"/full_body_img/"))):
 
@@ -98,7 +102,7 @@ class MyDataset(Dataset):
         crop_img = cv2.resize(crop_img, (328, 328), cv2.INTER_AREA)
         img_real = crop_img[4:324, 4:324].copy()
         img_real_ori = img_real.copy()
-        img_masked = cv2.rectangle(img_real,(5,5,310,305),(0,0,0),-1)
+        img_masked = apply_mouth_mask(img_real, self.mask_version)
         
         lms_list = []
         with open(lms_path_ex, "r") as f:

@@ -31,6 +31,10 @@ def get_args():
                         help="Mixed precision. Big speedup on A100; changes numerics, so off by default.")
     parser.add_argument('--resume', type=str, default="",
                         help="Path to a last.pth to continue an interrupted run.")
+    parser.add_argument('--mask_version', type=str, default="v2_no_jaw",
+                        choices=["v2_no_jaw", "legacy"],
+                        help="v2_no_jaw hides the jaw so the model cannot infer mouth "
+                             "shape from it. legacy reproduces the original leaky mask.")
 
     return parser.parse_args()
 
@@ -90,11 +94,21 @@ def train(net, epoch, batch_size, lr):
     save_dir= args.save_dir
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
+
+    # Record how this model was trained so inference/eval reproduce it exactly.
+    # A checkpoint dir without this file is assumed legacy (pre-jaw-mask-fix).
+    import json as _json
+    with open(os.path.join(save_dir, "train_config.json"), "w") as _f:
+        _json.dump({"mask_version": args.mask_version, "asr": args.asr,
+                    "use_syncnet": bool(use_syncnet),
+                    "syncnet_checkpoint": args.syncnet_checkpoint}, _f, indent=2)
+    print(f"Mouth mask: {args.mask_version} "
+          f"({'jaw hidden' if args.mask_version != 'legacy' else 'jaw VISIBLE - leaks mouth shape'})")
     dataloader_list = []
     dataset_list = []
     dataset_dir_list = [args.dataset_dir]
     for dataset_dir in dataset_dir_list:
-        dataset = MyDataset(dataset_dir, args.asr)
+        dataset = MyDataset(dataset_dir, args.asr, mask_version=args.mask_version)
         train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                                       drop_last=False, num_workers=args.num_workers,
                                       persistent_workers=(args.num_workers > 0))

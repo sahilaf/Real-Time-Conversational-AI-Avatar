@@ -9,7 +9,8 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from unet_328 import Model
 from tqdm import tqdm
-from utils import AudioEncoder, AudDataset, get_audio_features
+from utils import (AudioEncoder, AudDataset, get_audio_features,
+                   apply_mouth_mask, read_mask_version)
 # from unet2 import Model
 # from unet_att import Model
 
@@ -28,6 +29,12 @@ parser.add_argument('--ssl_model', type=str, default="facebook/wav2vec2-xls-r-30
                     help="Encoder for --asr ssl. Must match what training used.")
 parser.add_argument('--ssl_layer', type=int, default=12,
                     help="Hidden layer for --asr ssl. Must match what training used.")
+parser.add_argument('--ref_frame', type=int, default=-1,
+                    help="Frame index for the appearance reference (channels 0-2). "
+                         "-1 = auto-pick the most closed-mouth frame.")
+parser.add_argument('--no_fixed_ref', action='store_true',
+                    help="Revert to the original behaviour where channels 0-2 follow the "
+                         "current frame. Leaks the source mouth; use only for A/B.")
 args = parser.parse_args()
 
 checkpoint_path = os.path.join(".", "checkpoint", args.name)
@@ -42,6 +49,13 @@ if not checkpoint_files:
         "Training saves those every 5 epochs; last.pth alone is not usable here.")
 checkpoint = os.path.join(checkpoint_path, sorted(checkpoint_files, key=lambda x: int(x.split(".")[0]))[-1])
 print(checkpoint)
+
+# The mask must match what this checkpoint trained with, or the model sees an
+# input it has never encountered. Legacy checkpoints predate train_config.json.
+MASK_VERSION = read_mask_version(checkpoint)
+print(f"Mouth mask: {MASK_VERSION}" +
+      ("  (legacy - jaw visible, so mouth shape partly leaks from the source video)"
+       if MASK_VERSION == "legacy" else "  (jaw hidden)"))
 
 # Extract audio filename without extension
 audio_filename = os.path.basename(args.audio_path)
@@ -107,6 +121,55 @@ img_idx = 0
 net = Model(6, mode).cuda()
 net.load_state_dict(torch.load(checkpoint))
 net.eval()
+
+# --- Fixed appearance reference (channels 0-2) ------------------------------
+# Training (datasetsss_328.py) puts a RANDOM DIFFERENT frame in channels 0-2 and
+# the current frame, mouth blacked out, in channels 3-5. Inference used to put
+# the CURRENT frame in channels 0-2 with its mouth visible - so the reference
+# carried the source video's real mouth, and since the reference walks through
+# footage of the person talking, the generated mouth followed it. That is why a
+# silent audio track still produced a talking avatar.
+#
+# Holding the reference on one closed-mouth frame restores the training
+# distribution and leaves audio as the only varying driver of the mouth.
+INNER_LIP_UPPER, INNER_LIP_LOWER = [103, 104, 105], [107, 108, 109]
+
+def _read_lms(p):
+    return np.array([np.array(l.split(" "), dtype=np.float32)
+                     for l in open(p).read().splitlines()])
+
+def _crop_320(frame_idx):
+    im = cv2.imread(os.path.join(img_dir, f"{frame_idx}.jpg"))
+    lm = _read_lms(os.path.join(lms_dir, f"{frame_idx}.lms")).astype(np.int32)
+    x0, y0 = max(0, int(lm[1][0])), max(0, int(lm[52][1]))
+    x1 = min(im.shape[1] - 1, int(lm[31][0]))
+    y1 = min(im.shape[0] - 1, y0 + (x1 - x0))
+    c = cv2.resize(im[y0:y1, x0:x1], (328, 328), interpolation=cv2.INTER_CUBIC)
+    return c[4:324, 4:324].copy()
+
+fixed_ref_T = None
+if not args.no_fixed_ref:
+    ref_idx = args.ref_frame
+    if ref_idx < 0:                       # auto: the most closed mouth available
+        aps = []
+        for i in range(len_img):
+            p = os.path.join(lms_dir, f"{i}.lms")
+            if not os.path.exists(p):
+                continue
+            L = _read_lms(p)
+            aps.append((float(L[INNER_LIP_LOWER, 1].mean() - L[INNER_LIP_UPPER, 1].mean()), i))
+        if not aps:
+            raise RuntimeError("No landmarks found; pass --ref_frame explicitly.")
+        ap_min, ref_idx = min(aps)
+        print(f"[Ref] Auto-selected frame {ref_idx} as appearance reference "
+              f"(mouth aperture {ap_min:.2f}; median {np.median([a for a,_ in aps]):.1f})")
+    else:
+        print(f"[Ref] Using frame {ref_idx} as appearance reference")
+    _r = _crop_320(ref_idx).transpose(2, 0, 1).astype(np.float32) / 255.0
+    fixed_ref_T = torch.from_numpy(_r)
+else:
+    print("[Ref] --no_fixed_ref: channels 0-2 follow the current frame "
+          "(original behaviour; mouth can move even on silent audio)")
 for i in tqdm(range(audio_feats.shape[0])):
     if img_idx>len_img - 1:
         step_stride = -1
@@ -151,11 +214,14 @@ for i in tqdm(range(audio_feats.shape[0])):
     img_real_ex_ori = img_real_ex.copy()
     # if args.parsing:
         # img_real_ex_ori_ori = img_real_ex.copy()
-    img_masked = cv2.rectangle(img_real_ex_ori,(5,5,310,305),(0,0,0),-1)
+    img_masked = apply_mouth_mask(img_real_ex_ori, MASK_VERSION)
     img_masked = img_masked.transpose(2,0,1).astype(np.float32)
     img_real_ex = img_real_ex.transpose(2,0,1).astype(np.float32)
     
-    img_real_ex_T = torch.from_numpy(img_real_ex / 255.0)
+    # Channels 0-2: fixed appearance reference (see note above), not the
+    # current frame - otherwise the reference's own mouth drives the output.
+    img_real_ex_T = (fixed_ref_T if fixed_ref_T is not None
+                     else torch.from_numpy(img_real_ex / 255.0))
     img_masked_T = torch.from_numpy(img_masked / 255.0)
     img_concat_T = torch.cat([img_real_ex_T, img_masked_T], axis=0)[None]
     

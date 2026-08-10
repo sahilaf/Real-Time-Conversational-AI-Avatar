@@ -44,12 +44,20 @@ def main():
     import numpy as np
     import torch
     from unet_328 import Model
+    from utils import apply_mouth_mask, read_mask_version
 
     manifest = read_json(Path(args.manifest))
     dataset_dir = Path(manifest["dataset_dir"])
     mode = manifest["mode"]
     checkpoint = latest_checkpoint(args.checkpoint)
     device = choose_device(torch, args.device)
+
+    # Scoring with a different mask than the model trained on measures nothing.
+    mask_version = read_mask_version(str(checkpoint))
+    print(f"Mouth mask: {mask_version}"
+          + ("  (legacy - jaw visible; the model can read mouth shape from it, "
+             "so these scores overstate audio-driven quality)"
+             if mask_version == "legacy" else "  (jaw hidden)"))
 
     image_dir = dataset_dir / "full_body_img"
     landmark_dir = dataset_dir / "landmarks"
@@ -83,8 +91,10 @@ def main():
 
             crop_resized = cv2.resize(crop, (328, 328), interpolation=cv2.INTER_CUBIC)
             real = crop_resized[4:324, 4:324].copy()
-            masked = real.copy()
-            masked = cv2.rectangle(masked, (5, 5), (310, 305), (0, 0, 0), -1)
+            # Must match the mask this checkpoint trained with. This used the
+            # pt1/pt2 form of cv2.rectangle while training used the rect form,
+            # so the two masks differed by 5px even before the jaw fix.
+            masked = apply_mouth_mask(real, mask_version)
 
             real_t = torch.from_numpy(real.transpose(2, 0, 1).astype(np.float32) / 255.0)
             masked_t = torch.from_numpy(masked.transpose(2, 0, 1).astype(np.float32) / 255.0)

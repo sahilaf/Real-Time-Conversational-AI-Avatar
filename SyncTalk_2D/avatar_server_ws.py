@@ -38,7 +38,8 @@ from fastapi.responses import JSONResponse, Response
 import uvicorn
 
 from unet_328 import Model
-from utils import AudioEncoder, AudDataset, get_audio_features as _get_audio_features
+from utils import (AudioEncoder, AudDataset, get_audio_features as _get_audio_features,
+                   apply_mouth_mask, read_mask_version)
 
 
 # -----------------------------
@@ -68,6 +69,52 @@ import hashlib
 IDLE_CACHE_DIR = "idle_cache"
 IDLE_DURATION_SECONDS = 4.0  # 4 seconds of idle animation
 IDLE_FPS = 25
+
+# Bumped whenever idle generation changes, so stale caches are rebuilt instead
+# of silently reused.
+#   v2: real silence features instead of zeros, closed-mouth reference frames
+#   v3: reference frames must be CONTIGUOUS (v2 scattered them and the head
+#       appeared to skip between unrelated poses)
+#   v4: idle uses the ORIGINAL frames, no model inference at all
+IDLE_CACHE_VERSION = 4
+
+# Idle needs no lip-sync, and the source video already contains real footage of
+# this person sitting quietly. Running the generator over it can only
+# approximate what is already there - and this generator was trained without
+# working sync supervision, so its mouth is imperfect for any input, silence
+# included. Playing the real frames is exact by construction.
+#
+# The crop/resize round-trip is kept identical to the speech path so the only
+# difference between idle and generated frames is the mouth pixels themselves;
+# that keeps the transition from popping.
+IDLE_USE_RAW_FRAMES = True
+
+# Inner-lip landmarks in this 110-point layout. 90-101 is the outer lip ring,
+# 102-109 the inner one; the gap between the inner rows is mouth aperture.
+INNER_LIP_UPPER = [103, 104, 105]
+INNER_LIP_LOWER = [107, 108, 109]
+
+# Populated at startup by initialize_idle_inputs()
+silence_feats: Optional[np.ndarray] = None      # encoded TRUE silence, not zeros
+idle_ref_indices: List[int] = []                # a contiguous closed-mouth run
+
+# --- Reference-frame leakage -------------------------------------------------
+# Training feeds channels 0-2 a RANDOM DIFFERENT frame (datasetsss_328.py picks
+# ex_int at random) and channels 3-5 the current frame with its mouth blacked
+# out. Inference instead put the CURRENT frame in channels 0-2, mouth visible.
+#
+# So at inference the reference channels carry the source video's real mouth,
+# and because ping-pong walks through footage of the person talking, those
+# channels change every frame. The generated mouth follows them - which is why
+# the avatar appears to speak even when the audio is silent.
+#
+# Holding the reference fixed restores the training distribution (a frame that
+# is not the current one) and leaves audio as the only varying driver.
+USE_FIXED_REFERENCE = True
+
+# Set from the checkpoint at startup; must match how the model was trained.
+MASK_VERSION = "legacy"
+fixed_ref_tensor: Optional[torch.Tensor] = None   # [3,320,320], set at startup
 
 @dataclass
 class IdleCache:
@@ -244,17 +291,19 @@ def _generate_frame(sess: SessionState, audio_feats: np.ndarray, frame_idx: int,
 
     # CRITICAL: Create masked version - black out mouth region
     # The working version uses tuple (5, 5, 310, 305) which OpenCV interprets as (x, y, w, h)
-    img_masked = img_real_ex_ori.copy()
-    # Draw filled black rectangle from (5,5) with width=310, height=305
-    # This means bottom-right is at (5+310=315, 5+305=310) - covering most of face
-    img_masked[5:310, 5:315] = 0  # Direct pixel assignment instead of cv2.rectangle
+    img_masked = apply_mouth_mask(img_real_ex_ori, MASK_VERSION)
     
     # Transpose to CHW format for model
     img_masked = img_masked.transpose(2, 0, 1).astype(np.float32)
     img_real_ex = img_real_ex.transpose(2, 0, 1).astype(np.float32)
 
-    # Convert to tensors
-    img_real_ex_T = torch.from_numpy(img_real_ex / 255.0)
+    # Convert to tensors. Channels 0-2 are the APPEARANCE reference; training
+    # always supplied a different frame there, so keeping it fixed both matches
+    # training and stops the reference's own mouth from driving the output.
+    if USE_FIXED_REFERENCE and fixed_ref_tensor is not None:
+        img_real_ex_T = fixed_ref_tensor
+    else:
+        img_real_ex_T = torch.from_numpy(img_real_ex / 255.0)
     img_masked_T = torch.from_numpy(img_masked / 255.0)
     img_concat_T = torch.cat([img_real_ex_T, img_masked_T], dim=0)[None].to(device)
 
@@ -319,6 +368,146 @@ def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
 
     print(f"[SyncTalk] ✅ Ready. Image: {img_w}x{img_h} frames_available={len_img} mode={mode}")
 
+    initialize_idle_inputs()
+
+
+def _mouth_aperture(lms: np.ndarray) -> float:
+    """Vertical gap between the inner lips. ~0 when the mouth is shut."""
+    return float(lms[INNER_LIP_LOWER, 1].mean() - lms[INNER_LIP_UPPER, 1].mean())
+
+
+def initialize_idle_inputs():
+    """Prepare the two things idle frames need: silence features and quiet frames.
+
+    Previously idle fed an all-zero audio tensor, described as "silence". It is
+    not. The AVE encoder is post-ReLU, so real features are non-negative with
+    mean ~0.36, and true silence encodes to a rich vector of similar magnitude.
+    An all-zero tensor sits ~2.5x further from the feature centroid than real
+    silence does - it is out of distribution, and the UNet emits an arbitrary
+    mouth for it. That is the "mouth moves during idle" artefact.
+
+    The second cause is the reference frame. Channels 0-2 of the model input
+    carry a real frame including its mouth, and idle used to ping-pong across
+    the whole video - mostly frames where the speaker was mid-sentence. So the
+    generated mouth tracked whatever the reference happened to be doing. We now
+    only use frames whose mouth is actually closed.
+    """
+    global silence_feats, idle_ref_indices
+
+    # --- 1. encode real silence -------------------------------------------
+    try:
+        import tempfile
+        import soundfile as sf
+        sil_path = os.path.join(tempfile.gettempdir(), "synctalk_silence.wav")
+        if not os.path.exists(sil_path):
+            sf.write(sil_path, np.zeros(16000 * 2, dtype=np.float32), 16000)
+        silence_feats = _process_audio_to_features(sil_path)
+        print(f"[Idle] Encoded true silence: {silence_feats.shape} "
+              f"mean={silence_feats.mean():+.4f} (zeros would be 0.0000)")
+    except Exception as e:
+        silence_feats = None
+        print(f"[Idle] WARNING: could not encode silence ({e}); falling back to zeros. "
+              "Idle mouth may look wrong.")
+
+    # --- 2. find a CONTIGUOUS run of closed-mouth frames -------------------
+    # Contiguity matters as much as closure. Picking the globally-quietest
+    # frames gives a set scattered across the whole video, so consecutive idle
+    # frames jump between unrelated head poses and the avatar looks like it is
+    # skipping. A single continuous stretch keeps natural head motion.
+    ap = np.full(len_img, np.nan, dtype=np.float32)
+    for i in range(len_img):
+        try:
+            ap[i] = _mouth_aperture(_load_landmarks(os.path.join(lms_dir, f"{i}.lms")))
+        except Exception:
+            continue
+
+    valid = ~np.isnan(ap)
+    if not valid.any():
+        idle_ref_indices = list(range(min(len_img, 100)))
+        print("[Idle] WARNING: no landmarks readable; idle will use the first frames.")
+        return
+
+    def longest_run(mask):
+        best_start, best_len, start = 0, 0, None
+        for i, v in enumerate(mask):
+            if v and start is None:
+                start = i
+            elif not v and start is not None:
+                if i - start > best_len:
+                    best_start, best_len = start, i - start
+                start = None
+        if start is not None and len(mask) - start > best_len:
+            best_start, best_len = start, len(mask) - start
+        return best_start, best_len
+
+    # Ping-pong over L frames yields 2L-2 distinct frames before repeating, so
+    # L = N/2 + 2 is the minimum. But when idle plays REAL frames we ask for the
+    # full N, which means playback never has to reverse - and time-reversed
+    # motion (a blink running backwards) is one of the things that reads as
+    # unnatural. Real frames cost nothing to "generate", so the longer run is
+    # free; it comes at slightly higher aperture, which does not matter when the
+    # mouth is genuine footage rather than something the model invented.
+    n_idle = int(IDLE_DURATION_SECONDS * IDLE_FPS)
+    needed = n_idle if IDLE_USE_RAW_FRAMES else n_idle // 2 + 2
+    v = ap[valid]
+    print(f"[Idle] Mouth aperture across {int(valid.sum())} frames: "
+          f"min={v.min():.1f} median={float(np.median(v)):.1f} max={v.max():.1f}")
+
+    chosen = None
+    for q in (10, 15, 20, 25, 30, 35, 45, 60, 100):
+        thr = float(np.percentile(v, q))
+        start, length = longest_run(valid & (ap <= thr))
+        if length >= needed:
+            chosen = (start, length, thr, q)
+            break
+
+    if chosen is None:
+        # Nothing long enough anywhere; take the quietest stretch we can get.
+        thr = float(np.percentile(v, 60))
+        start, length = longest_run(valid & (ap <= thr))
+        chosen = (start, max(length, 1), thr, 60)
+        print("[Idle] WARNING: no long closed-mouth run found; using the best available.")
+
+    start, length, thr, q = chosen
+    idle_ref_indices = list(range(start, start + length))
+
+    # --- 3. build the fixed reference frame for channels 0-2 ---------------
+    if USE_FIXED_REFERENCE:
+        try:
+            quietest = int(np.nanargmin(np.where(valid, ap, np.nan)))
+            _set_fixed_reference(quietest)
+            print(f"[Ref] Fixed reference frame = {quietest} (aperture {ap[quietest]:.2f}). "
+                  "Channels 0-2 no longer track the current frame.")
+        except Exception as e:
+            print(f"[Ref] WARNING: could not build fixed reference ({e}); "
+                  "falling back to per-frame reference (mouth may move on silence).")
+
+
+def _set_fixed_reference(frame_idx: int):
+    """Cache one closed-mouth frame as the appearance reference (channels 0-2)."""
+    global fixed_ref_tensor
+
+    img = cv2.imread(os.path.join(img_dir, f"{frame_idx}.jpg"))
+    if img is None:
+        raise RuntimeError(f"could not read reference frame {frame_idx}")
+    lms = _load_landmarks(os.path.join(lms_dir, f"{frame_idx}.lms"))
+
+    xmin, ymin = max(0, int(lms[1][0])), max(0, int(lms[52][1]))
+    xmax = min(img.shape[1] - 1, int(lms[31][0]))
+    ymax = min(img.shape[0] - 1, ymin + (xmax - xmin))
+
+    crop = img[ymin:ymax, xmin:xmax]
+    if crop.size == 0:
+        raise RuntimeError("empty crop for reference frame")
+    crop = cv2.resize(crop, (328, 328), interpolation=cv2.INTER_CUBIC)
+    ref = crop[4:324, 4:324].transpose(2, 0, 1).astype(np.float32) / 255.0
+    fixed_ref_tensor = torch.from_numpy(ref)
+    seg = ap[start:start + length]
+    print(f"[Idle] Idle reference run: frames {start}..{start + length - 1} "
+          f"({length} frames, {length / IDLE_FPS:.1f}s) at <={thr:.1f} ({q}th pct)")
+    print(f"[Idle] Aperture in run: mean={np.nanmean(seg):.2f} max={np.nanmax(seg):.2f} "
+          f"(video median {float(np.median(v)):.1f})")
+
 
 def _generate_idle_frame(img_idx: int, mode_str: str) -> np.ndarray:
     """Generate a single idle frame with neutral/closed mouth (silence audio features)"""
@@ -355,11 +544,17 @@ def _generate_idle_frame(img_idx: int, mode_str: str) -> np.ndarray:
     crop_img = cv2.resize(crop, (328, 328), interpolation=cv2.INTER_CUBIC)
     crop_img_ori = crop_img.copy()
     
+    if IDLE_USE_RAW_FRAMES:
+        # crop_img_ori still holds the untouched crop, so the same resize path
+        # below simply returns the real frame with its real mouth.
+        crop_img_ori = cv2.resize(crop_img_ori, (w, h), interpolation=cv2.INTER_CUBIC)
+        img[ymin:ymax, xmin:xmax] = crop_img_ori
+        return cv2.resize(img, (img_w, img_h), interpolation=cv2.INTER_AREA)
+
     img_real_ex = crop_img[4:324, 4:324].copy()
     img_real_ex_ori = img_real_ex.copy()
-    
-    img_masked = img_real_ex_ori.copy()
-    img_masked[5:310, 5:315] = 0
+
+    img_masked = apply_mouth_mask(img_real_ex_ori, MASK_VERSION)
     
     img_masked = img_masked.transpose(2, 0, 1).astype(np.float32)
     img_real_ex = img_real_ex.transpose(2, 0, 1).astype(np.float32)
@@ -368,16 +563,23 @@ def _generate_idle_frame(img_idx: int, mode_str: str) -> np.ndarray:
     img_masked_T = torch.from_numpy(img_masked / 255.0)
     img_concat_T = torch.cat([img_real_ex_T, img_masked_T], dim=0)[None].to(device)
     
-    # Use ZERO audio features for idle/silence (neutral mouth)
-    if mode_str == "hubert":
-        C, H, W = 32, 32, 32
-    elif mode_str == "wenet":
-        C, H, W = 256, 16, 32
-    else:  # ave
-        C, H, W = 32, 16, 16
-    
-    silent_audio = torch.zeros((1, C, H, W), dtype=torch.float32).to(device)
-    
+    # Feed features of REAL silence, not zeros. Zeros are out of distribution
+    # for this post-ReLU encoder and make the UNet emit an arbitrary mouth.
+    if silence_feats is not None and len(silence_feats) > 20:
+        mid = len(silence_feats) // 2
+        window = _get_audio_features(silence_feats, mid)          # [16, D]
+        silent_audio = _reshape_audio_feat(window, mode_str).to(device)
+    else:
+        if mode_str == "hubert":
+            C, H, W = 32, 32, 32
+        elif mode_str == "wenet":
+            C, H, W = 256, 16, 32
+        elif mode_str == "ssl":
+            C, H, W = 16, 32, 32
+        else:  # ave
+            C, H, W = 32, 16, 16
+        silent_audio = torch.zeros((1, C, H, W), dtype=torch.float32).to(device)
+
     with torch.no_grad():
         pred = synctalk_model(img_concat_T, silent_audio)[0]
     
@@ -406,10 +608,11 @@ def initialize_idle_cache():
             with open(meta_file, "r") as f:
                 meta = json.load(f)
             
-            if (meta.get("frame_count") == num_frames and 
-                meta.get("img_w") == img_w and 
+            if (meta.get("frame_count") == num_frames and
+                meta.get("img_w") == img_w and
                 meta.get("img_h") == img_h and
-                meta.get("mode") == mode):
+                meta.get("mode") == mode and
+                meta.get("version") == IDLE_CACHE_VERSION):
                 
                 print(f"[IdleCache] Loading {num_frames} cached idle frames...")
                 with open(cache_file, "rb") as f:
@@ -432,25 +635,35 @@ def initialize_idle_cache():
     os.makedirs(cache_dir, exist_ok=True)
     
     frames = []
-    img_idx = 0
-    step = 1
-    
+
+    # Ping-pong through CLOSED-MOUTH frames only. Walking the whole video meant
+    # most reference frames caught the speaker mid-sentence, and the generated
+    # mouth partly copied whatever the reference was doing.
+    refs = idle_ref_indices if idle_ref_indices else list(range(len_img))
+    pos, step = 0, 1
+
     for i in range(num_frames):
-        # Ping-pong through source images
-        if img_idx >= len_img - 1:
+        if pos >= len(refs) - 1:
             step = -1
-        if img_idx <= 0:
+        if pos <= 0:
             step = 1
-        img_idx += step
-        
+        pos += step
+        img_idx = refs[max(0, min(pos, len(refs) - 1))]
+
         try:
             frame = _generate_idle_frame(img_idx, mode)
             ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if ok:
                 frames.append(jpg.tobytes())
         except Exception as e:
+            # Fail on the first frame rather than logging the same error 100
+            # times and then caching an empty animation.
+            if not frames:
+                raise RuntimeError(
+                    f"Idle frame generation failed on the first frame: {e}"
+                ) from e
             print(f"[IdleCache] Error generating frame {i}: {e}")
-        
+
         if (i + 1) % 25 == 0:
             print(f"[IdleCache] Generated {i + 1}/{num_frames} frames...")
     
@@ -465,7 +678,10 @@ def initialize_idle_cache():
             "img_h": img_h,
             "mode": mode,
             "duration_seconds": IDLE_DURATION_SECONDS,
-            "fps": IDLE_FPS
+            "fps": IDLE_FPS,
+            "version": IDLE_CACHE_VERSION,
+            "closed_mouth_refs": len(idle_ref_indices),
+            "silence_features": silence_feats is not None,
         }, f)
     
     idle_cache = IdleCache(
