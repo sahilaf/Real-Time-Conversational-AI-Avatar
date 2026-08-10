@@ -25,8 +25,11 @@ def get_args():
     parser.add_argument('--batchsize', type=int, default=8)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--asr', type=str, default="hubert")
-    # 4 suits a 7.4GB RAM laptop; raise to 8 on Colab. Was 32, which OOMs.
-    parser.add_argument('--num_workers', type=int, default=4)
+    # 2 for a 7.4GB RAM laptop; raise to 8 on Colab. Was hardcoded 32.
+    # This script is heavier than syncnet_328.py (VGG19 + SyncNet + UNet all
+    # resident), and on Windows every worker is a fresh process that re-imports
+    # torch, so 4 workers exhausted RAM during worker spawn. Use 0 if 2 fails.
+    parser.add_argument('--num_workers', type=int, default=2)
     parser.add_argument('--amp', action='store_true',
                         help="Mixed precision. Big speedup on A100; changes numerics, so off by default.")
     parser.add_argument('--resume', type=str, default="",
@@ -45,14 +48,18 @@ class PerceptualLoss():
     
     def contentFunc(self):
         conv_3_3_layer = 14
+        # Slice on CPU and move only the part we keep. The original moved the
+        # whole 20M-parameter VGG19 feature stack to the GPU and then discarded
+        # everything past conv3_3, wasting both VRAM and host RAM on a machine
+        # that has little of either.
         cnn = models.vgg19(pretrained=True).features
-        cnn = cnn.cuda()
         model = nn.Sequential()
-        model = model.cuda()
         for i,layer in enumerate(list(cnn)):
             model.add_module(str(i),layer)
             if i == conv_3_3_layer:
                 break
+        del cnn
+        model = model.cuda()
         # VGG is a fixed feature extractor - nothing ever trains it, so the
         # gradient buffers it would otherwise allocate are pure waste.
         model.eval()
