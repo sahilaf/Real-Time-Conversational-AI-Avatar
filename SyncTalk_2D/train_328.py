@@ -34,6 +34,15 @@ def get_args():
                         help="Mixed precision. Big speedup on A100; changes numerics, so off by default.")
     parser.add_argument('--resume', type=str, default="",
                         help="Path to a last.pth to continue an interrupted run.")
+    # Upstream hardcoded 10, which was harmless only because their SyncNet was
+    # collapsed. With a working SyncNet, 10x makes the generator adversarially
+    # maximise the frozen scorer and emit noise. Wav2Lip uses 0.03.
+    parser.add_argument('--sync_weight', type=float, default=0.03,
+                        help="Weight on the sync loss. 10 (the old hardcoded value) destroys "
+                             "the image once the SyncNet actually works.")
+    parser.add_argument('--sync_start_epoch', type=int, default=5,
+                        help="Keep sync weight at 0 until this epoch so the generator learns "
+                             "to reconstruct a face first.")
     parser.add_argument('--mask_version', type=str, default="v2_no_jaw",
                         choices=["v2_no_jaw", "legacy"],
                         help="v2_no_jaw hides the jaw so the model cannot infer mouth "
@@ -108,7 +117,10 @@ def train(net, epoch, batch_size, lr):
     with open(os.path.join(save_dir, "train_config.json"), "w") as _f:
         _json.dump({"mask_version": args.mask_version, "asr": args.asr,
                     "use_syncnet": bool(use_syncnet),
-                    "syncnet_checkpoint": args.syncnet_checkpoint}, _f, indent=2)
+                    "syncnet_checkpoint": args.syncnet_checkpoint,
+                    "sync_weight": args.sync_weight,
+                    "sync_start_epoch": args.sync_start_epoch}, _f, indent=2)
+    print(f"Sync loss: weight {args.sync_weight} from epoch {args.sync_start_epoch}")
     print(f"Mouth mask: {args.mask_version} "
           f"({'jaw hidden' if args.mask_version != 'legacy' else 'jaw VISIBLE - leaks mouth shape'})")
     dataloader_list = []
@@ -140,8 +152,14 @@ def train(net, epoch, batch_size, lr):
         start_epoch = ckpt["epoch"]
         print(f"Resumed from {args.resume} at epoch {start_epoch}.")
 
+    loss_log = os.path.join(save_dir, "loss_log.csv")
+    if not args.resume or not os.path.exists(loss_log):
+        with open(loss_log, "w") as f:
+            f.write("epoch,l1,vgg,sync,sync_weight" + chr(10))
+
     for e in range(start_epoch, epoch):
         net.train()
+        epoch_terms = []
         random_i = random.randint(0, len(dataset_dir_list)-1)
         dataset = dataset_list[random_i]
         train_dataloader = dataloader_list[random_i]
@@ -160,19 +178,43 @@ def train(net, epoch, batch_size, lr):
                     loss_pixel = criterion(preds, labels)
                 # BCELoss (inside cosine_loss) is unsafe under autocast, so the
                 # sync term and the final sum are computed in fp32.
-                if use_syncnet:
+                # Sync weight is 0 until sync_start_epoch, so the generator first
+                # learns to reconstruct a face. Handing a frozen scorer a large
+                # weight from step 0 makes the generator maximise that scorer
+                # adversarially instead of learning lip-sync - it produces
+                # high-frequency colour noise that scores ~0.8 while the image
+                # collapses. Upstream's 10x was harmless only because their
+                # SyncNet was collapsed and contributed no gradient.
+                w_sync = args.sync_weight if e >= args.sync_start_epoch else 0.0
+                if use_syncnet and w_sync > 0:
                     y = torch.ones([preds.shape[0],1]).float().cuda()
                     sync_loss = cosine_loss(a.float(), v.float(), y)
-                    loss = loss_pixel.float() + loss_PerceptualLoss.float()*0.01 + 10*sync_loss
+                    loss = loss_pixel.float() + loss_PerceptualLoss.float()*0.01 + w_sync*sync_loss
                 else:
+                    sync_loss = torch.zeros((), device=preds.device)
                     loss = loss_pixel.float() + loss_PerceptualLoss.float()*0.01
-                p.set_postfix(**{'loss (batch)': loss.item()})
+                # Log the terms separately - a single total hides the generator
+                # trading image quality away for sync score.
+                p.set_postfix(**{'L1': f'{loss_pixel.item():.4f}',
+                                 'vgg': f'{loss_PerceptualLoss.item():.3f}',
+                                 'sync': f'{float(sync_loss):.4f}',
+                                 'w': w_sync})
+                epoch_terms.append((loss_pixel.item(), float(loss_PerceptualLoss),
+                                    float(sync_loss)))
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
                 p.update(imgs.shape[0])
                 
+        if epoch_terms:
+            import numpy as _np
+            m = _np.mean(epoch_terms, axis=0)
+            w_now = args.sync_weight if e >= args.sync_start_epoch else 0.0
+            with open(loss_log, "a") as f:
+                f.write(f"{e+1},{m[0]:.6f},{m[1]:.6f},{m[2]:.6f},{w_now}" + chr(10))
+            print(f"epoch {e+1}  L1 {m[0]:.4f}  vgg {m[1]:.3f}  sync {m[2]:.4f}  (w={w_now})")
+
         # last.pth is the full resume state. The numbered files stay plain
         # state_dicts so inference/eval scripts keep loading them unchanged.
         torch.save({"epoch": e + 1,
