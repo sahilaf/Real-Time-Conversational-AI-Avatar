@@ -21,8 +21,25 @@ from common_eval import (
 )
 
 
-def process_audio(torch, AudioEncoder, AudDataset, audio_path: Path, device):
+def process_audio(torch, AudioEncoder, AudDataset, audio_path: Path, device,
+                  mode: str = "ave", dataset_dir: Path = None):
     from torch.utils.data import DataLoader
+
+    if mode == "ssl":
+        # This function used to run the AVE mel encoder unconditionally, so
+        # `--mode ssl` produced 512-wide features and then failed trying to
+        # reshape them to [16,32,32]. Use the SSL extractor, reusing the
+        # training-time normalisation stats when they are available.
+        from extract_ssl_features import extract as extract_ssl
+        stats = None
+        if dataset_dir is not None:
+            sp = Path(dataset_dir) / "aud_ssl_stats.npz"
+            if sp.exists():
+                import numpy as _np
+                z = _np.load(sp, allow_pickle=True)
+                stats = (z["mean"], z["std"])
+                print(f"using training-time SSL stats from {sp} (layer {z['layer']})")
+        return extract_ssl(str(audio_path), device=device, fp16=True, stats=stats)
 
     encoder = AudioEncoder().to(device).eval()
     ckpt = torch.load(project_root() / "model" / "checkpoints" / "audio_visual_encoder.pth", map_location=device)
@@ -74,7 +91,8 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else run_dir(args.dataset_name, syncnet_checkpoint, "sync")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    audio_features = process_audio(torch, AudioEncoder, AudDataset, audio_path, device)
+    audio_features = process_audio(torch, AudioEncoder, AudDataset, audio_path, device,
+                                   mode=args.mode, dataset_dir=dataset_dir)
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
