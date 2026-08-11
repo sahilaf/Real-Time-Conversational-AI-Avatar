@@ -64,6 +64,10 @@ checkpoint_name = os.path.splitext(os.path.basename(checkpoint))[0]
 
 save_path = os.path.join(".", "result", f"{args.name}_{audio_name_without_ext}_{checkpoint_name}.mp4")
 temp_save_path = save_path.replace(".mp4", "_temp.mp4")
+# result/ is gitignored, so it does not exist after a fresh clone. cv2.VideoWriter
+# fails SILENTLY when the directory is missing - write() becomes a no-op and the
+# script still exits 0 with no video.
+os.makedirs(os.path.dirname(save_path), exist_ok=True)
 dataset_dir = os.path.join(".", "dataset", args.name)
 audio_path = args.audio_path
 mode = args.asr
@@ -115,6 +119,10 @@ if mode=="hubert" or mode=="ave" or mode=="ssl":
     video_writer = cv2.VideoWriter(temp_save_path, cv2.VideoWriter_fourcc(*'MJPG'), 25, (w, h))
 if mode=="wenet":
     video_writer = cv2.VideoWriter(temp_save_path, cv2.VideoWriter_fourcc(*'MJPG'), 20, (w, h))
+if not video_writer.isOpened():
+    raise RuntimeError(
+        f"cv2.VideoWriter could not open {temp_save_path}. Check the directory exists "
+        "and that OpenCV has an MJPG encoder.")
 step_stride = 0
 img_idx = 0
 
@@ -269,7 +277,13 @@ save_path_abs = os.path.abspath(save_path)
 
 # For Windows, we need to properly escape the paths
 ffmpeg_cmd = f'ffmpeg -i "{temp_save_path_abs}" -i "{audio_path_abs}" -c:v libx264 -c:a aac -crf 20 "{save_path_abs}" -y'
-os.system(ffmpeg_cmd)
+# os.system does not raise on failure, so an ffmpeg error used to leave the
+# script exiting 0 with no output file. Check it.
+rc = os.system(ffmpeg_cmd)
+if rc != 0 or not os.path.exists(save_path_abs):
+    raise RuntimeError(
+        f"ffmpeg muxing failed (exit {rc}) - no video at {save_path_abs}.\n"
+        f"Command: {ffmpeg_cmd}")
 
 # Remove temporary file
 try:
@@ -277,4 +291,5 @@ try:
 except OSError as e:
     print(f"Error removing temporary file: {e}")
 
-print(f"[INFO] ===== save video to {save_path_abs} =====")
+print(f"[INFO] ===== save video to {save_path_abs} "
+      f"({os.path.getsize(save_path_abs)/1024**2:.1f} MB) =====")
