@@ -40,6 +40,14 @@ def get_args():
     parser.add_argument('--sync_weight', type=float, default=0.03,
                         help="Weight on the sync loss. 10 (the old hardcoded value) destroys "
                              "the image once the SyncNet actually works.")
+    # The perceptual term was hardcoded at 0.01, which is near-inert - it is the
+    # loss that would notice an invented colour patch, and it never objected.
+    parser.add_argument('--vgg_weight', type=float, default=0.01,
+                        help="Perceptual loss weight. 0.01 is the inherited value and is "
+                             "too weak to penalise colour artefacts; try 0.1.")
+    parser.add_argument('--chroma_weight', type=float, default=0.0,
+                        help="L1 on luminance-independent colour. Makes a colour error cost "
+                             "the same in dark regions as in bright ones; try 1.0.")
     parser.add_argument('--sync_start_epoch', type=int, default=5,
                         help="Keep sync weight at 0 until this epoch so the generator learns "
                              "to reconstruct a face first.")
@@ -89,6 +97,25 @@ class PerceptualLoss():
         loss = self.criterion(f_fake, f_real_no_grad)
         return loss
 
+def chroma_loss(pred, target):
+    """L1 on colour with luminance divided out.
+
+    Plain pixel L1 weights an error by its absolute size, so a colour mistake on
+    a near-black pixel costs almost nothing. That is why the generator hides its
+    perturbation in the beard: predicting blue 0.20 where the truth is 0.05 costs
+    about 0.05, which the sync term happily pays for.
+
+    Splitting chroma from luma makes the same mistake cost the same wherever it
+    happens, so the darkest region stops being the cheap place to cheat. Uses
+    BGR order to match how OpenCV loads the frames.
+    """
+    def to_chroma(x):
+        luma = 0.114 * x[:, 0] + 0.587 * x[:, 1] + 0.299 * x[:, 2]
+        return torch.stack([x[:, 0] - luma, x[:, 2] - luma], dim=1)
+
+    return nn.functional.l1_loss(to_chroma(pred), to_chroma(target))
+
+
 logloss = nn.BCELoss()
 def cosine_loss(a, v, y):
     d = nn.functional.cosine_similarity(a, v)
@@ -119,6 +146,8 @@ def train(net, epoch, batch_size, lr):
                     "use_syncnet": bool(use_syncnet),
                     "syncnet_checkpoint": args.syncnet_checkpoint,
                     "sync_weight": args.sync_weight,
+                    "vgg_weight": args.vgg_weight,
+                    "chroma_weight": args.chroma_weight,
                     "sync_start_epoch": args.sync_start_epoch}, _f, indent=2)
     print(f"Sync loss: weight {args.sync_weight} from epoch {args.sync_start_epoch}")
     print(f"Mouth mask: {args.mask_version} "
@@ -155,7 +184,7 @@ def train(net, epoch, batch_size, lr):
     loss_log = os.path.join(save_dir, "loss_log.csv")
     if not args.resume or not os.path.exists(loss_log):
         with open(loss_log, "w") as f:
-            f.write("epoch,l1,vgg,sync,sync_weight" + chr(10))
+            f.write("epoch,l1,vgg,sync,chroma,sync_weight" + chr(10))
 
     for e in range(start_epoch, epoch):
         net.train()
@@ -186,21 +215,27 @@ def train(net, epoch, batch_size, lr):
                 # collapses. Upstream's 10x was harmless only because their
                 # SyncNet was collapsed and contributed no gradient.
                 w_sync = args.sync_weight if e >= args.sync_start_epoch else 0.0
+                loss = (loss_pixel.float()
+                        + args.vgg_weight * loss_PerceptualLoss.float())
+                if args.chroma_weight > 0:
+                    chroma = chroma_loss(preds.float(), labels.float())
+                    loss = loss + args.chroma_weight * chroma
+                else:
+                    chroma = torch.zeros((), device=preds.device)
                 if use_syncnet and w_sync > 0:
                     y = torch.ones([preds.shape[0],1]).float().cuda()
                     sync_loss = cosine_loss(a.float(), v.float(), y)
-                    loss = loss_pixel.float() + loss_PerceptualLoss.float()*0.01 + w_sync*sync_loss
+                    loss = loss + w_sync * sync_loss
                 else:
                     sync_loss = torch.zeros((), device=preds.device)
-                    loss = loss_pixel.float() + loss_PerceptualLoss.float()*0.01
                 # Log the terms separately - a single total hides the generator
                 # trading image quality away for sync score.
                 p.set_postfix(**{'L1': f'{loss_pixel.item():.4f}',
                                  'vgg': f'{loss_PerceptualLoss.item():.3f}',
                                  'sync': f'{float(sync_loss):.4f}',
-                                 'w': w_sync})
+                                 'chr': f'{float(chroma):.4f}'})
                 epoch_terms.append((loss_pixel.item(), float(loss_PerceptualLoss),
-                                    float(sync_loss)))
+                                    float(sync_loss), float(chroma)))
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -212,8 +247,8 @@ def train(net, epoch, batch_size, lr):
             m = _np.mean(epoch_terms, axis=0)
             w_now = args.sync_weight if e >= args.sync_start_epoch else 0.0
             with open(loss_log, "a") as f:
-                f.write(f"{e+1},{m[0]:.6f},{m[1]:.6f},{m[2]:.6f},{w_now}" + chr(10))
-            print(f"epoch {e+1}  L1 {m[0]:.4f}  vgg {m[1]:.3f}  sync {m[2]:.4f}  (w={w_now})")
+                f.write(f"{e+1},{m[0]:.6f},{m[1]:.6f},{m[2]:.6f},{m[3]:.6f},{w_now}" + chr(10))
+            print(f"epoch {e+1}  L1 {m[0]:.4f}  vgg {m[1]:.3f}  sync {m[2]:.4f}  chroma {m[3]:.4f}  (w_sync={w_now})")
 
         # last.pth is the full resume state. The numbered files stay plain
         # state_dicts so inference/eval scripts keep loading them unchanged.
