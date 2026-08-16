@@ -99,6 +99,52 @@ def apply_mouth_mask(img320, version=MASK_V2):
     return out
 
 
+def suppress_invented_chroma(pred_bgr, real_bgr, threshold=0.03):
+    """Remove blue/cyan the generator invented that is absent from the real face.
+
+    A sync loss trained at weight 0.03 measurably improves lip-sync, but leaves a
+    persistent blue smear running from the lower lip down through the beard. The
+    cause is the loss, not the model: L1 error on near-black pixels is tiny in
+    absolute terms, so the darkest region of the crop is the cheapest place for
+    the generator to hide a perturbation, and nothing else in the objective
+    penalises inventing colour (the perceptual term is weighted 0.01).
+
+    Only pixels that are blue-dominant in the prediction AND *not* blue-dominant
+    in the source face are altered. That leaves the subject's blue shirt - which
+    is genuinely in frame at the bottom of the crop - untouched, and it cannot
+    leak ground truth because the correction caps a channel rather than copying
+    anything across.
+
+    Luminance is preserved, so the generated mouth shape survives intact.
+
+    Args:
+        pred_bgr: generated crop, uint8 BGR.
+        real_bgr: the same crop from the source frame, uint8 BGR, same shape.
+        threshold: how far blue must exceed green and red to count as invented.
+    Returns:
+        Corrected uint8 BGR array, and the fraction of pixels changed.
+    """
+    if pred_bgr.shape != real_bgr.shape:
+        raise ValueError(f"shape mismatch: {pred_bgr.shape} vs {real_bgr.shape}")
+
+    pred = pred_bgr.astype(np.float32) / 255.0
+    real = real_bgr.astype(np.float32) / 255.0
+
+    pred_excess = pred[..., 0] - np.maximum(pred[..., 1], pred[..., 2])
+    real_excess = real[..., 0] - np.maximum(real[..., 1], real[..., 2])
+    invented = (pred_excess > threshold) & (real_excess <= threshold)
+
+    # Cap blue at the other channels outright. An absolute tolerance is
+    # meaningless here: in the beard, green and red sit around 0.05, so allowing
+    # blue to exceed them by even 0.10 leaves it three times brighter than both
+    # and still plainly blue. Removing the dominance entirely is what the region
+    # actually needs, and a face has no legitimately blue pixels anyway.
+    out = pred.copy()
+    ceiling = np.maximum(pred[..., 1], pred[..., 2])
+    out[..., 0] = np.where(invented, ceiling, pred[..., 0])
+    return (np.clip(out, 0.0, 1.0) * 255.0).astype(np.uint8), float(invented.mean())
+
+
 def read_mask_version(checkpoint_path):
     """Mask version a checkpoint was trained with. Absent marker => legacy."""
     import json

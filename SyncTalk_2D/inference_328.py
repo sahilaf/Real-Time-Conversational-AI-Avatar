@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from unet_328 import Model
 from tqdm import tqdm
 from utils import (AudioEncoder, AudDataset, get_audio_features,
-                   apply_mouth_mask, read_mask_version)
+                   apply_mouth_mask, read_mask_version, suppress_invented_chroma)
 # from unet2 import Model
 # from unet_att import Model
 
@@ -32,6 +32,9 @@ parser.add_argument('--ssl_layer', type=int, default=12,
 parser.add_argument('--ref_frame', type=int, default=-1,
                     help="Frame index for the appearance reference (channels 0-2). "
                          "-1 = auto-pick the most closed-mouth frame.")
+parser.add_argument('--no_chroma_fix', action='store_true',
+                    help="Skip the post-hoc chroma correction. The sync loss leaves a blue "
+                         "smear in dark regions; this removes it without retraining.")
 parser.add_argument('--no_fixed_ref', action='store_true',
                     help="Revert to the original behaviour where channels 0-2 follow the "
                          "current frame. Leaks the source mouth; use only for A/B.")
@@ -125,6 +128,7 @@ if not video_writer.isOpened():
         "and that OpenCV has an MJPG encoder.")
 step_stride = 0
 img_idx = 0
+chroma_fixed_px = []
 
 net = Model(6, mode).cuda()
 net.load_state_dict(torch.load(checkpoint))
@@ -252,6 +256,11 @@ for i in tqdm(range(audio_feats.shape[0])):
         
     pred = pred.cpu().numpy().transpose(1,2,0)*255
     pred = np.array(pred, dtype=np.uint8)
+    if not args.no_chroma_fix:
+        # The sync loss leaves a blue smear in the beard; see utils for why.
+        # Compares against the real crop, so the subject's blue shirt is safe.
+        pred, changed = suppress_invented_chroma(pred, crop_img_ori[4:324, 4:324])
+        chroma_fixed_px.append(changed)
     # if args.parsing:  # Read semantic segmentation map, use ori img for [0, 0, 255] area, not pred result
         # parsing_mask = (crop_parsing_img[4:324, 4:324] == [0, 0, 255]).all(axis=2)
         # pred[parsing_mask] = img_real_ex_ori_ori[parsing_mask]
@@ -291,5 +300,8 @@ try:
 except OSError as e:
     print(f"Error removing temporary file: {e}")
 
+if chroma_fixed_px:
+    import numpy as _np
+    print(f"[INFO] chroma correction touched {_np.mean(chroma_fixed_px)*100:.3f}% of generated pixels on average")
 print(f"[INFO] ===== save video to {save_path_abs} "
       f"({os.path.getsize(save_path_abs)/1024**2:.1f} MB) =====")
