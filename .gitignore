@@ -52,3 +52,6 @@ SyncTalk_2D/demo/test.wav
 *.tar
 *.tar.gz
 *.zip
+
+# ---- Debug images written by diagnostic probes ----
+SyncTalk_2D/*.png
