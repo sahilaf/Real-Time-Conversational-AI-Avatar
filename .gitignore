@@ -55,3 +55,10 @@ SyncTalk_2D/demo/test.wav
 
 # ---- Debug images written by diagnostic probes ----
 SyncTalk_2D/*.png
+
+# ---- Keep the two small preprocessing models ----
+# data_utils/process.py cannot run without these, so a fresh clone would have
+# no working data pipeline. Listed last because the later rule wins and the
+# *.tar entry above would otherwise re-ignore the landmark checkpoint. 8 MB.
+!SyncTalk_2D/data_utils/scrfd_2.5g_kps.onnx
+!SyncTalk_2D/data_utils/checkpoint_epoch_335.pth.tar
