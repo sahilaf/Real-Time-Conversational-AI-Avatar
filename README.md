@@ -340,12 +340,16 @@ model = google.realtime.RealtimeModel(
 ### SyncTalk_2D Server Options
 
 ```bash
-python avatar_server_ws.py \
-  --checkpoint <path>     # Path to trained model checkpoint
-  --dataset <path>        # Path to dataset directory (images + landmarks)
-  --mode ave              # Audio feature mode: ave | hubert | wenet
-  --port 5001             # Server port
+python avatar_server_ws.py --checkpoint checkpoint/final_v2/59.pth --dataset dataset/redwan --mode ave --port 5001
 ```
+
+`--out_size` sets the longest side of streamed frames (default 720, `0` for
+native). Smaller frames are faster to encode, send, and decode; changing it
+rebuilds the idle cache automatically.
+
+The mouth-mask version is read from `train_config.json` beside the checkpoint,
+so it always matches how the model was trained. The server prints it at startup
+as `[SyncTalk] Mouth mask: ...` — keep that file next to the weights.
 
 ---
 

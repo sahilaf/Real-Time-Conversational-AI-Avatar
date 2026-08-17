@@ -38,8 +38,11 @@ from fastapi.responses import JSONResponse, Response
 import uvicorn
 
 from unet_328 import Model
+from scipy.signal import resample_poly
+
 from utils import (AudioEncoder, AudDataset, get_audio_features as _get_audio_features,
-                   apply_mouth_mask, read_mask_version)
+                   apply_mouth_mask, read_mask_version, blend_bottom_edge,
+                   melspectrogram)
 
 
 # -----------------------------
@@ -114,7 +117,35 @@ USE_FIXED_REFERENCE = True
 
 # Set from the checkpoint at startup; must match how the model was trained.
 MASK_VERSION = "legacy"
+
+# Rows over which the generated crop fades back to the source at its bottom
+# edge. The v2 mask leaves no unmasked strip there, so a hard paste puts the
+# invented jaw straight against untouched source. 0 restores the hard paste.
+FEATHER_ROWS = 16
 fixed_ref_tensor: Optional[torch.Tensor] = None   # [3,320,320], set at startup
+
+# End-of-batch marker in the frame_index header field (also carries the PCM).
+END_MARKER = 0xFFFFFFFF
+
+# Source frames the speech walk may use as base footage. Set to the idle run at
+# startup so idle and speech share the same footage and transitions stay
+# pose-continuous; falls back to the whole video if no run was found.
+speech_window: List[int] = []
+
+# Idle cache position -> source frame index, so the client can hand the walk
+# position back and forth across idle/speech transitions.
+idle_source_map: List[int] = []
+
+# Decoded source frames for the speech window. The window is ~100-160 frames,
+# so this trades a few hundred MB of RAM for removing JPEG decode (~10 ms) from
+# every generated frame. Populated lazily; capped.
+FRAME_CACHE_MAX = 170
+_frame_cache: Dict[int, tuple] = {}   # ref_index -> (img_bgr, lms)
+
+# Output frames are resized to this before JPEG encoding (longest side).
+# 0 = native. Encoding 1080px costs ~10 ms/frame of a 40 ms budget; 720px is
+# indistinguishable in the browser at typical layout sizes.
+OUT_SIZE = 720
 
 @dataclass
 class IdleCache:
@@ -147,6 +178,7 @@ class SessionState:
     segment_id: int = 0            # Counter for audio segments
     audio_connected: bool = False
     video_connected: bool = False
+    reset_requested: bool = False  # set by a client "reset" control message
 
 
 sessions: Dict[str, SessionState] = {}
@@ -155,24 +187,56 @@ sessions: Dict[str, SessionState] = {}
 # -----------------------------
 # SyncTalk helpers
 # -----------------------------
-def _reset_pingpong(sess: SessionState):
-    sess.img_idx = 0
-    sess.step_stride = 1
-
-
 def _pingpong_next(sess: SessionState) -> int:
-    global len_img
-    if len_img <= 1:
-        return 0
+    """Advance the walk one step and return the SOURCE frame index.
 
-    if sess.img_idx >= (len_img - 1):
+    sess.img_idx is a position within speech_window, not a source index.
+    Must only be called from the (single, sequential) generation path - it
+    mutates shared state.
+    """
+    n = len(speech_window)
+    if n == 0:
+        return 0
+    if n == 1:
+        return speech_window[0]
+
+    if sess.img_idx >= n - 1:
         sess.step_stride = -1
     if sess.img_idx <= 0:
         sess.step_stride = 1
 
-    sess.img_idx += sess.step_stride
-    sess.img_idx = max(0, min(sess.img_idx, len_img - 1))
-    return sess.img_idx
+    sess.img_idx = max(0, min(sess.img_idx + sess.step_stride, n - 1))
+    return speech_window[sess.img_idx]
+
+
+def _align_walk(sess: SessionState, source_idx: int):
+    """Position the walk at the window frame nearest to source_idx.
+
+    Called when the client reports where its idle loop currently is, so the
+    first speech frame continues from the same footage instead of jumping.
+    """
+    if not speech_window:
+        return
+    pos = min(range(len(speech_window)),
+              key=lambda i: abs(speech_window[i] - source_idx))
+    sess.img_idx = pos
+    sess.step_stride = 1 if pos < len(speech_window) - 1 else -1
+
+
+def _read_source_frame(ref_index: int):
+    """Decoded frame + landmarks, cached for the speech window."""
+    hit = _frame_cache.get(ref_index)
+    if hit is not None:
+        return hit
+
+    img = cv2.imread(os.path.join(img_dir, f"{ref_index}.jpg"))
+    if img is None:
+        raise RuntimeError(f"Failed to read image: {ref_index}.jpg")
+    lms = _load_landmarks(os.path.join(lms_dir, f"{ref_index}.lms"))
+
+    if len(_frame_cache) < FRAME_CACHE_MAX:
+        _frame_cache[ref_index] = (img, lms)
+    return img, lms
 
 
 def _load_landmarks(path: str) -> np.ndarray:
@@ -219,6 +283,140 @@ def _process_audio_to_features(wav_path: str) -> np.ndarray:
     return audio_feats.numpy()
 
 
+class StreamingFeatureExtractor:
+    """Incremental AVE features that match offline extraction.
+
+    Offline (training and inference_328): resample to 16 kHz, mel spectrogram
+    (hop 200, win 800, centred), one 16-mel window per video frame starting at
+    mel int(80*j/25), AudioEncoder, then [first | feats | last] edge
+    duplication - a convention baked into the aud_ave.npy files the model was
+    trained on. A streaming path that ignores any of this shifts or corrupts
+    the audio the generator sees, and the mouth stops matching the speech.
+
+    This produces the same numbers incrementally:
+      - resampling runs over the whole utterance each time with a fixed
+        phase, so chunk boundaries cannot drift the timeline;
+      - mel is recomputed from a mel-hop-aligned tail with CTX_MEL context
+        frames, so window values never depend on where a chunk started;
+      - a feature is only produced once all of its audio exists (window end
+        m*200 + 400 <= len16), so no edge-padded mel is ever consumed.
+
+    raw[j] here corresponds to offline outputs[j]; the caller applies the
+    [first | raw | last] convention when building windows.
+    """
+    SR24 = 24000
+    SR16 = 16000
+    MEL_HOP = 200                 # samples per mel frame at 16 kHz
+    MEL_HALF = 400                # centred window: mel m spans m*200 +/- 400
+    WIN = 16                      # mel frames per feature window
+    CTX_MEL = 8                   # context mels absorbing chunk-edge effects
+
+    def __init__(self):
+        self.pcm24 = np.zeros(0, dtype=np.int16)
+        self.raw: Optional[np.ndarray] = None      # [n, 512] feature frames
+
+    @property
+    def n_raw(self) -> int:
+        return 0 if self.raw is None else len(self.raw)
+
+    @property
+    def n_audio_frames(self) -> int:
+        """Complete 40 ms video frames of audio received."""
+        return len(self.pcm24) // (self.SR24 // 25)
+
+    def add(self, pcm24: np.ndarray):
+        self.pcm24 = np.concatenate([self.pcm24, pcm24])
+
+    def extract(self):
+        """Compute every feature frame the buffered audio now supports."""
+        n16 = int(len(self.pcm24) * 2) // 3
+        m_valid = (n16 - self.MEL_HALF) // self.MEL_HOP + 1 if n16 >= self.MEL_HALF else 0
+
+        r0, r_new = self.n_raw, self.n_raw
+        while int(80 * r_new / 25) + self.WIN <= m_valid:
+            r_new += 1
+        if r_new == r0:
+            return
+
+        wav16 = resample_poly(self.pcm24.astype(np.float32) / 32768.0, 2, 3)
+
+        # mel-hop-aligned start, with context so reflection padding and the
+        # pre-emphasis transient decay before any window in use
+        s0 = max(0, int(80 * r0 / 25) - self.CTX_MEL)
+        mel = melspectrogram(wav16[s0 * self.MEL_HOP:]).T    # [frames, 80]
+
+        wins = []
+        for j in range(r0, r_new):
+            a = int(80 * j / 25) - s0
+            wins.append(mel[a:a + self.WIN].T)               # [80, 16]
+        batch = torch.from_numpy(np.stack(wins).astype(np.float32)).unsqueeze(1)
+        with torch.no_grad():
+            out = audio_encoder(batch.to(device)).cpu().numpy()
+        self.raw = out if self.raw is None else np.concatenate([self.raw, out])
+
+    def finalize(self):
+        """Compute the tail windows with AudDataset's end-clamping.
+
+        Offline extraction produces int((m-16)/80*25)+2 windows for m mel
+        frames, the last few re-using the final 16 mels (crop_audio_window
+        slides the window back at the end). Reproducing that here makes the
+        flush tail bit-consistent with offline inference too.
+        """
+        n16 = int(len(self.pcm24) * 2) // 3
+        if n16 < self.MEL_HOP:
+            return
+        m_total = n16 // self.MEL_HOP + 1        # librosa centred frame count
+        data_len = int((m_total - 16) / 80.0 * 25.0) + 2
+        if data_len <= self.n_raw:
+            return
+
+        r0 = self.n_raw
+        s0 = max(0, min(int(80 * r0 / 25), m_total - self.WIN) - self.CTX_MEL)
+        wav16 = resample_poly(self.pcm24.astype(np.float32) / 32768.0, 2, 3)
+        mel = melspectrogram(wav16[s0 * self.MEL_HOP:]).T
+
+        wins = []
+        for j in range(r0, data_len):
+            a = min(int(80 * j / 25), m_total - self.WIN) - s0
+            wins.append(mel[a:a + self.WIN].T)
+        batch = torch.from_numpy(np.stack(wins).astype(np.float32)).unsqueeze(1)
+        with torch.no_grad():
+            out = audio_encoder(batch.to(device)).cpu().numpy()
+        self.raw = out if self.raw is None else np.concatenate([self.raw, out])
+
+    def features_for_emit(self, final: bool) -> Optional[np.ndarray]:
+        """Feature array in the trained [first | raw | last] convention.
+
+        Mid-stream the tail is extended by repeating the newest frame, so the
+        outer slots of the last windows hold the latest real audio instead of
+        the zeros get_audio_features would insert; on the final call the array
+        matches offline extraction exactly.
+        """
+        if self.raw is None:
+            return None
+        if final:
+            return np.concatenate([self.raw[:1], self.raw, self.raw[-1:]])
+        tail = np.repeat(self.raw[-1:], 8, axis=0)
+        return np.concatenate([self.raw[:1], self.raw, tail])
+
+
+def _idle_walk_indices(refs: List[int], n: int) -> List[int]:
+    """The source index sequence the idle cache walks - cache pos -> source.
+
+    Must match the generation loop in initialize_idle_cache exactly; the client
+    uses this mapping to hand the walk position across idle/speech transitions.
+    """
+    out, pos, step = [], 0, 1
+    for _ in range(n):
+        if pos >= len(refs) - 1:
+            step = -1
+        if pos <= 0:
+            step = 1
+        pos += step
+        out.append(refs[max(0, min(pos, len(refs) - 1))])
+    return out
+
+
 def _reshape_audio_feat(a, mode_str: str) -> torch.Tensor:
     """
     Conv2D expects [B, C, H, W]. Keep SyncTalk modes:
@@ -249,22 +447,16 @@ def _reshape_audio_feat(a, mode_str: str) -> torch.Tensor:
     return a.view(1, C, H, W)
 
 
-def _generate_frame(sess: SessionState, audio_feats: np.ndarray, frame_idx: int, start_frame: int = 0) -> np.ndarray:
+def _generate_frame(sess: SessionState, audio_feats: np.ndarray, frame_idx: int) -> np.ndarray:
+    """Generate one lip-synced frame.
+
+    frame_idx selects the audio feature window; the base frame comes from the
+    walk. Calls must be strictly sequential - the walk mutates shared state.
     """
-    Generate a single frame using SyncTalk model.
-    EXACT copy of working stable version's mask logic.
-    """
-    idx = _pingpong_next(sess)
-    ref_index = (idx + start_frame) % max(1, len_img)
+    ref_index = _pingpong_next(sess)
 
-    img_path = os.path.join(img_dir, f"{ref_index}.jpg")
-    lms_path = os.path.join(lms_dir, f"{ref_index}.lms")
-
-    img = cv2.imread(img_path)
-    if img is None:
-        raise RuntimeError(f"Failed to read image: {img_path}")
-
-    lms = _load_landmarks(lms_path)
+    src, lms = _read_source_frame(ref_index)
+    img = src.copy()   # the composite below writes into it; never mutate the cache
 
     xmin = int(lms[1][0])
     ymin = int(lms[52][1])
@@ -317,7 +509,9 @@ def _generate_frame(sess: SessionState, audio_feats: np.ndarray, frame_idx: int,
 
     pred = (pred.detach().cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
 
-    # Composite back
+    # Composite back. img_real_ex_ori is the untouched crop, so the fade at the
+    # bottom edge lands on real pixels rather than on the masked input.
+    pred = blend_bottom_edge(pred, img_real_ex_ori, FEATHER_ROWS)
     crop_img_ori[4:324, 4:324] = pred
     crop_img_ori = cv2.resize(crop_img_ori, (w, h), interpolation=cv2.INTER_CUBIC)
     img[ymin:ymax, xmin:xmax] = crop_img_ori
@@ -328,10 +522,20 @@ def _generate_frame(sess: SessionState, audio_feats: np.ndarray, frame_idx: int,
 def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
     global audio_encoder, synctalk_model, device, mode
     global dataset_dir, img_dir, lms_dir, len_img, img_h, img_w
+    global MASK_VERSION
 
     mode = asr_mode
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[SyncTalk] Using device: {device}")
+
+    # Input shapes never change, so let cuDNN pick the fastest kernels once.
+    torch.backends.cudnn.benchmark = True
+
+    # Feeding a mask the model was not trained on leaves the jaw strip visible
+    # as real pixels, and the generator's output there disagrees with the rest
+    # of the crop - a rectangle outlining the mask appears on every frame.
+    MASK_VERSION = read_mask_version(checkpoint_path)
+    print(f"[SyncTalk] Mouth mask: {MASK_VERSION}")
 
     print("[SyncTalk] Loading audio encoder...")
     ae = AudioEncoder().to(device).eval()
@@ -362,6 +566,19 @@ def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
     if exm is None:
         raise RuntimeError("Could not read 0.jpg")
     img_h, img_w = exm.shape[:2]
+
+    # Output resolution: everything internal stays native; only the final
+    # resize before JPEG encoding changes. Idle cache metadata keys on
+    # img_w/img_h, so a resolution change rebuilds it automatically.
+    if OUT_SIZE > 0 and max(img_h, img_w) > OUT_SIZE:
+        scale = OUT_SIZE / max(img_h, img_w)
+        img_w, img_h = int(round(img_w * scale)), int(round(img_h * scale))
+        print(f"[SyncTalk] Output scaled to {img_w}x{img_h} (native {exm.shape[1]}x{exm.shape[0]})")
+
+    # Until initialize_idle_inputs finds the closed-mouth run, the walk may use
+    # any frame.
+    global speech_window
+    speech_window = list(range(len_img))
 
     audio_encoder = ae
     synctalk_model = m
@@ -470,6 +687,20 @@ def initialize_idle_inputs():
 
     start, length, thr, q = chosen
     idle_ref_indices = list(range(start, start + length))
+    seg = ap[start:start + length]
+    print(f"[Idle] Idle reference run: frames {start}..{start + length - 1} "
+          f"({length} frames, {length / IDLE_FPS:.1f}s) at <={thr:.1f} ({q}th pct)")
+    print(f"[Idle] Aperture in run: mean={np.nanmean(seg):.2f} max={np.nanmax(seg):.2f} "
+          f"(video median {float(np.median(v)):.1f})")
+
+    # Speech base frames come from the same run: idle plays this footage, so
+    # starting speech inside it means the transition cannot jump to an
+    # unrelated pose, and the small working set stays hot in the page cache.
+    global speech_window
+    if length >= 25:
+        speech_window = list(idle_ref_indices)
+        print(f"[Walk] Speech base frames constrained to the idle run "
+              f"({len(speech_window)} frames)")
 
     # --- 3. build the fixed reference frame for channels 0-2 ---------------
     if USE_FIXED_REFERENCE:
@@ -502,11 +733,6 @@ def _set_fixed_reference(frame_idx: int):
     crop = cv2.resize(crop, (328, 328), interpolation=cv2.INTER_CUBIC)
     ref = crop[4:324, 4:324].transpose(2, 0, 1).astype(np.float32) / 255.0
     fixed_ref_tensor = torch.from_numpy(ref)
-    seg = ap[start:start + length]
-    print(f"[Idle] Idle reference run: frames {start}..{start + length - 1} "
-          f"({length} frames, {length / IDLE_FPS:.1f}s) at <={thr:.1f} ({q}th pct)")
-    print(f"[Idle] Aperture in run: mean={np.nanmean(seg):.2f} max={np.nanmax(seg):.2f} "
-          f"(video median {float(np.median(v)):.1f})")
 
 
 def _generate_idle_frame(img_idx: int, mode_str: str) -> np.ndarray:
@@ -594,13 +820,18 @@ def _generate_idle_frame(img_idx: int, mode_str: str) -> np.ndarray:
 
 def initialize_idle_cache():
     """Generate or load cached idle animation frames"""
-    global idle_cache, img_w, img_h, mode
-    
+    global idle_cache, img_w, img_h, mode, idle_source_map
+
     cache_dir = os.path.join(os.path.dirname(__file__), IDLE_CACHE_DIR)
     cache_file = os.path.join(cache_dir, "idle_frames.pkl")
     meta_file = os.path.join(cache_dir, "metadata.json")
-    
+
     num_frames = int(IDLE_DURATION_SECONDS * IDLE_FPS)  # 100 frames for 4 seconds
+
+    # cache position -> source frame; deterministic, so valid for a loaded
+    # cache too (the generation loop below walks the identical sequence).
+    refs_for_map = idle_ref_indices if idle_ref_indices else list(range(len_img))
+    idle_source_map = _idle_walk_indices(refs_for_map, num_frames)
     
     # Check if cache exists and is valid
     if os.path.exists(cache_file) and os.path.exists(meta_file):
@@ -638,18 +869,9 @@ def initialize_idle_cache():
 
     # Ping-pong through CLOSED-MOUTH frames only. Walking the whole video meant
     # most reference frames caught the speaker mid-sentence, and the generated
-    # mouth partly copied whatever the reference was doing.
-    refs = idle_ref_indices if idle_ref_indices else list(range(len_img))
-    pos, step = 0, 1
-
-    for i in range(num_frames):
-        if pos >= len(refs) - 1:
-            step = -1
-        if pos <= 0:
-            step = 1
-        pos += step
-        img_idx = refs[max(0, min(pos, len(refs) - 1))]
-
+    # mouth partly copied whatever the reference was doing. The sequence comes
+    # from _idle_walk_indices so idle_source_map stays exact by construction.
+    for i, img_idx in enumerate(idle_source_map):
         try:
             frame = _generate_idle_frame(img_idx, mode)
             ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
@@ -697,264 +919,192 @@ def initialize_idle_cache():
 # -----------------------------
 # Background worker per session
 # -----------------------------
-async def session_worker(sess: SessionState, fps: int = 25, start_frame: int = 0, batch_duration: float = 0.02):
+async def session_worker(sess: SessionState, fps: int = 25):
+    """Stream lip-synced frames for incoming audio, audio-first.
+
+    Protocol per emitted batch (client is the audio-master; see agent):
+        1. AUDIO packet:  [seg_id][END_MARKER][n_frames][dur_ms] + int16 PCM.
+           Sent BEFORE any frame so the client can keep speech continuous
+           regardless of how fast the GPU renders.
+        2. n_frames FRAME packets, streamed as each is generated:
+           [seg_id][frame_idx][n_frames][dur_ms] + jpg.
+        3. On flush (end of utterance): a text JSON
+           {"type": "utterance_end", "frames": N, "end_source_idx": i}
+           so the client knows the total and where to resume its idle loop.
+
+    Design notes:
+      - Generation is strictly sequential: the base-frame walk mutates shared
+        state, and the GPU serialises forwards anyway. The old gather() version
+        raced the walk and shuffled head poses.
+      - Features come from StreamingFeatureExtractor, which reproduces the
+        offline extraction (and its training-time edge-duplication convention)
+        incrementally. A frame is emitted once the centre of its feature
+        window is real audio; the tail of the window uses the newest frame.
+      - If rendering falls behind real time by more than CATCHUP_BEHIND frames,
+        the previous JPEG is re-sent instead of rendered. The client would drop
+        a late frame anyway; skipping lets the GPU catch up.
     """
-    Process audio chunks and generate video frames with SEGMENT-BASED protocol.
-    
-    IMPORTANT: Maintains audio context overlap between segments for accurate lip sync.
-    get_audio_features() needs ±8 frames of context, so we keep overlap audio.
-    
-    Each segment includes:
-    - Video frames with segment_id, frame_index, total_frames
-    - End-of-segment marker with audio PCM for synchronized playback
-    
-    Frame header format (16 bytes):
-        [4B segment_id][4B frame_index][4B total_frames][4B audio_duration_ms] + jpg
-    
-    End-of-segment marker:
-        [4B segment_id][4B 0xFFFFFFFF][4B total_frames][4B audio_duration_ms] + pcm_bytes
-    """
-    print(f"[Session {sess.sid}] Worker started (segment-based, batch={batch_duration}s, with audio context overlap)")
-    
-    pcm_buffer = np.zeros((0,), dtype=np.int16)
-    buffer_start_time = None
-    SAMPLE_RATE = 24000
-    MAX_SEGMENT_DUR_S = 0.7 
-    END_MARKER = 0xFFFFFFFF
-    
-    # Audio context overlap for better lip sync
-    # Reduced to minimal overlap for lower latency
-    # Keep last segment's audio features to prepend to next segment
-    CONTEXT_FRAMES = 2  # Minimal context for smooth transitions (80ms)
-    prev_audio_feats: Optional[np.ndarray] = None  # Previous segment's audio features
-    
+    SR = 24000                     # PCM rate of the Gemini stream
+    SPF = SR // fps                # samples per video frame (960)
+    SEGMENT_S = 0.20               # audio accumulated before a feature batch;
+                                   # frames reach the client in one burst per
+                                   # batch, so shorter batches = smoother flow
+    CATCHUP_BEHIND = 10            # frames behind real time before skipping
+    CLIENT_GATE_S = 0.30           # client's prebuffer, used to anchor "behind"
+
+    extractor = StreamingFeatureExtractor()
+    sent = 0                                   # frames emitted this utterance
+    batch = np.zeros(0, dtype=np.int16)        # PCM since last extraction
+    batch_t0: Optional[float] = None
+    utt_anchor: Optional[float] = None         # wall clock of client playback start
+    last_jpg: Optional[bytes] = None
+
     def make_header(segment_id: int, frame_idx: int, total_frames: int, audio_dur_ms: int) -> bytes:
-        """Create 16-byte header for frame or end-of-segment marker"""
         return (
             segment_id.to_bytes(4, "little", signed=False) +
             frame_idx.to_bytes(4, "little", signed=False) +
             total_frames.to_bytes(4, "little", signed=False) +
             audio_dur_ms.to_bytes(4, "little", signed=False)
         )
-    
-    async def generate_frame_bytes(feats, frame_idx: int, start_frm: int, offset: int = 0) -> Optional[bytes]:
-        """Generate a single frame and return jpg bytes.
-        
-        Args:
-            feats: Audio features array
-            frame_idx: Frame index within the segment (0-based for output)
-            start_frm: Starting frame offset for ping-pong animation
-            offset: Offset to add to frame_idx for audio feature lookup (for context)
-        """
-        try:
-            # Use frame_idx + offset for audio features lookup
-            frame = await asyncio.to_thread(_generate_frame, sess, feats, frame_idx + offset, start_frm)
-            ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            if not ok:
-                return None
-            return jpg.tobytes()
-        except Exception as e:
-            print(f"[Session {sess.sid}] Error generating frame {frame_idx}: {e}")
-            return None
-    
+
+    def render(feats: np.ndarray, fi: int) -> Optional[bytes]:
+        """Generate frame fi of the utterance and JPEG-encode it. Thread-safe
+        to run in a worker thread only because calls are strictly sequential."""
+        frame = _generate_frame(sess, feats, fi)
+        ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        return jpg.tobytes() if ok else None
+
+    async def emit(n: int, feats: np.ndarray):
+        """Send audio for frames [sent, sent+n), then stream those frames."""
+        nonlocal sent, utt_anchor, last_jpg
+        if n <= 0:
+            return
+        sess.segment_id += 1
+        seg = sess.segment_id
+        dur_ms = int(n * 1000 / fps)
+
+        audio = extractor.pcm24[sent * SPF: (sent + n) * SPF]
+        if len(audio) < n * SPF:   # only possible on the flush tail
+            audio = np.concatenate(
+                [audio, np.zeros(n * SPF - len(audio), dtype=np.int16)])
+        await sess.frame_q.put(
+            make_header(seg, END_MARKER, n, dur_ms) + audio.tobytes())
+
+        if utt_anchor is None:
+            utt_anchor = time.monotonic() + CLIENT_GATE_S
+
+        for i in range(n):
+            fi = sent + i
+            behind = (time.monotonic() - utt_anchor) * fps - fi
+            if behind > CATCHUP_BEHIND and last_jpg is not None:
+                jpg = last_jpg                      # skip render, catch up
+            else:
+                jpg = await asyncio.to_thread(render, feats, fi)
+                if jpg is None:
+                    jpg = last_jpg
+                if jpg is None:
+                    continue                        # nothing renderable yet
+            last_jpg = jpg
+            await sess.frame_q.put(make_header(seg, i, n, dur_ms) + jpg)
+            sess.frames_generated += 1
+        sent += n
+
+    def reset_utterance():
+        nonlocal extractor, sent, utt_anchor
+        extractor = StreamingFeatureExtractor()
+        sent = 0
+        utt_anchor = None
+
+    print(f"[Session {sess.sid}] Worker started (streaming, segment={SEGMENT_S}s, "
+          f"window={len(speech_window)}f)")
+
     try:
         while not sess.closed.is_set():
+            if sess.reset_requested:
+                sess.reset_requested = False
+                reset_utterance()
+                batch = np.zeros(0, dtype=np.int16)
+                batch_t0 = None
+                for q in (sess.audio_q, sess.frame_q):
+                    while not q.empty():
+                        try:
+                            q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                print(f"[Session {sess.sid}] Reset: queues cleared")
+
+            # ---- 1. drain incoming audio --------------------------------
+            flush_now = False
+            stop = False
             try:
-                # 1. Collect all available audio chunks to batch them
-                chunks = []
-                # Wait for at least one chunk
-                first = await asyncio.wait_for(sess.audio_q.get(), timeout=0.05)
-                chunks.append(first)
-                # Drain the rest immediately
+                items = [await asyncio.wait_for(sess.audio_q.get(), timeout=0.05)]
                 while not sess.audio_q.empty():
                     try:
-                        chunks.append(sess.audio_q.get_nowait())
+                        items.append(sess.audio_q.get_nowait())
                     except asyncio.QueueEmpty:
                         break
-                
-                # 2. Add all to PCM buffer
-                should_flush_now = False
-                for wav_bytes in chunks:
-                    if wav_bytes is None:
-                        chunks = [None] # Signal break
+                for it in items:
+                    if it is None:
+                        stop = True
                         break
-                    
-                    if wav_bytes == b"__FLUSH__":
-                        should_flush_now = True
+                    if it == b"__FLUSH__":
+                        flush_now = True
                         continue
-                    
                     try:
-                        with io.BytesIO(wav_bytes) as wav_io:
-                            data, sr = sf.read(wav_io, dtype='int16')
-                            if data.ndim > 1: data = data[:, 0]
-                            pcm_buffer = np.concatenate([pcm_buffer, data])
-                            if buffer_start_time is None: buffer_start_time = time.time()
+                        with io.BytesIO(it) as f:
+                            data, sr_in = sf.read(f, dtype="int16")
+                        if data.ndim > 1:
+                            data = data[:, 0]
+                        if sr_in != SR:
+                            n_out = int(len(data) * SR / sr_in)
+                            data = np.interp(
+                                np.linspace(0, len(data), n_out, endpoint=False),
+                                np.arange(len(data)), data).astype(np.int16)
+                        batch = np.concatenate([batch, data])
+                        if batch_t0 is None:
+                            batch_t0 = time.monotonic()
+                        sess.last_audio_time = time.time()
                     except Exception as e:
-                        print(f"[Session {sess.sid}] Failed to read WAV chunk: {e}")
-                
-                if chunks and chunks[0] is None:
+                        print(f"[Session {sess.sid}] Bad WAV chunk: {e}")
+                if stop:
                     break
-
             except asyncio.TimeoutError:
-                # Process buffered audio if enough time has passed
-                if pcm_buffer.size > 0 and buffer_start_time and (time.time() - buffer_start_time >= batch_duration):
-                    pass  # Will process below
-                else:
-                    continue
-            
-            # Check if we should process the buffer
-            should_process = False
-            if pcm_buffer.size > 0:
-                buffer_age = time.time() - buffer_start_time if buffer_start_time else 0
-                # Process if: buffer is old enough OR queue was backed up OR flush requested
-                if buffer_age >= batch_duration or sess.audio_q.qsize() > 10 or should_flush_now:
-                    should_process = True
-            
-            if not should_process:
-                continue
-            
-            # Check duration - DO NOT DROP, just continue buffering if too short (unless flush)
-            dur = pcm_buffer.size / float(SAMPLE_RATE)
-            if dur < 0.04 and not should_flush_now:
-                continue
-            
-            # Save combined PCM as WAV file for feature extraction
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            tmp_path = tmp.name
-            tmp.close()
+                pass
 
-            try:
-                # Keep a copy of PCM for sending to client
-                segment_pcm = pcm_buffer.copy()
-                
-                # Write combined PCM buffer as WAV
-                sf.write(tmp_path, pcm_buffer, SAMPLE_RATE, format="WAV", subtype="PCM_16")
-                
-                audio_dur_ms = int(dur * 1000)
+            # ---- 2. fold the batch into the utterance -------------------
+            if batch.size and (flush_now or
+                               (batch_t0 and time.monotonic() - batch_t0 >= SEGMENT_S)):
+                extractor.add(batch)
+                batch = np.zeros(0, dtype=np.int16)
+                batch_t0 = None
+                await asyncio.to_thread(extractor.extract)
 
-                # Increment segment ID
-                sess.segment_id += 1
-                segment_id = sess.segment_id
-                
-                sess.last_audio_time = time.time()
+            # ---- 3. emit what has enough context ------------------------
+            if flush_now:
+                await asyncio.to_thread(extractor.finalize)
+                if extractor.n_raw > 0:
+                    feats = extractor.features_for_emit(final=True)
+                    target = max(sent, max(1, -(-len(extractor.pcm24) // SPF)))
+                    await emit(target - sent, feats)
+                    end_idx = speech_window[sess.img_idx] if speech_window else 0
+                    await sess.frame_q.put(json.dumps({
+                        "type": "utterance_end",
+                        "frames": sent,
+                        "end_source_idx": int(end_idx),
+                    }))
+                    print(f"[Session {sess.sid}] Utterance done: {sent} frames, "
+                          f"{len(extractor.pcm24) / SR:.2f}s audio, walk at {end_idx}")
+                reset_utterance()
+            elif extractor.n_raw > 0:
+                # Frame fi's feature window reaches raw[fi+6], so emitting at
+                # n_raw-7 keeps every mid-stream window identical to offline
+                # extraction (verified by the parity test). Costs 280 ms of
+                # holdback; emitting earlier trades lip accuracy for latency.
+                n_avail = min(extractor.n_audio_frames,
+                              extractor.n_raw - 7) - sent
+                if n_avail > 0:
+                    await emit(n_avail, extractor.features_for_emit(final=False))
 
-                # Extract audio features
-                current_feats = await asyncio.to_thread(_process_audio_to_features, tmp_path)
-                
-                # Combine with previous segment's features for context
-                # get_audio_features needs ±8 frames, so prepend last CONTEXT_FRAMES from prev
-                # Only concatenate if dimensions match (same feature size per frame)
-                if (prev_audio_feats is not None and 
-                    len(prev_audio_feats) >= CONTEXT_FRAMES and
-                    prev_audio_feats.shape[1:] == current_feats.shape[1:]):  # Check dimensions match
-                    # Take last CONTEXT_FRAMES from previous segment
-                    context = prev_audio_feats[-CONTEXT_FRAMES:]
-                    feats = np.concatenate([context, current_feats], axis=0)
-                    offset = CONTEXT_FRAMES  # Offset for frame generation
-                    print(f"[Session {sess.sid}] [Segment {segment_id}] Using {CONTEXT_FRAMES} frames of audio context from prev segment")
-                else:
-                    feats = current_feats
-                    offset = 0
-                    if prev_audio_feats is not None and prev_audio_feats.shape[1:] != current_feats.shape[1:]:
-                        print(f"[Session {sess.sid}] [Segment {segment_id}] Skipping context (shape mismatch: {prev_audio_feats.shape} vs {current_feats.shape})")
-                
-                # Save current features for next segment's context
-                prev_audio_feats = current_feats
-                
-                nframes = max(1, int(round(dur * fps)))
-
-                print(f"[Session {sess.sid}] [Segment {segment_id}] Generating {nframes} frames for {dur:.2f}s audio (feats: {len(feats)}, offset: {offset})")
-
-                t0 = time.time()
-                
-                # Generate all frames for this segment with offset for audio lookup
-                frame_bytes_list = []
-                last_valid_frame = None
-                if idle_cache and idle_cache.frame_count > 0:
-                    last_valid_frame = idle_cache.get_frame(0)
-
-                # FIX 1: Aggressive parallelization - generate ALL frames at once for small segments
-                if nframes <= 25:  # 1 second or less - full parallel generation
-                    tasks = [
-                        generate_frame_bytes(feats, i, start_frame, offset)
-                        for i in range(nframes)
-                    ]
-                    results = await asyncio.gather(*tasks)
-                    
-                    # Fix 4: Ensure integrity (replace failures)
-                    for res in results:
-                        if res is not None:
-                            frame_bytes_list.append(res)
-                            last_valid_frame = res
-                        else:
-                            if last_valid_frame:
-                                frame_bytes_list.append(last_valid_frame)
-                            else:
-                                frame_bytes_list.append(b'')
-                else:
-                    # For longer segments, use larger batches
-                    batch_size = 25  # Process 1 second at a time
-                    for batch_start in range(0, nframes, batch_size):
-                        batch_end = min(batch_start + batch_size, nframes)
-                        tasks = [
-                            generate_frame_bytes(feats, i, start_frame, offset)
-                            for i in range(batch_start, batch_end)
-                        ]
-                        results = await asyncio.gather(*tasks)
-                        
-                        # Fix 4: Ensure integrity (replace failures)
-                        for res in results:
-                            if res is not None:
-                                frame_bytes_list.append(res)
-                                last_valid_frame = res
-                            else:
-                                if last_valid_frame:
-                                    frame_bytes_list.append(last_valid_frame)
-                                else:
-                                    frame_bytes_list.append(b'')
-
-                # Ensure non-empty frames check
-                actual_nframes = len(frame_bytes_list)
-                
-                # Check for empty bytes from fallback failure
-                if last_valid_frame:
-                    frame_bytes_list = [fb if fb != b'' else last_valid_frame for fb in frame_bytes_list]
-                
-                # Queue all video frames with headers
-                for frame_idx, jpg_bytes in enumerate(frame_bytes_list):
-                    # NEVER DROP FRAMES - rely on large queue
-                    header = make_header(segment_id, frame_idx, actual_nframes, audio_dur_ms)
-                    packet = header + jpg_bytes
-                    await sess.frame_q.put(packet)
-                    sess.frames_generated += 1
-                
-                # Send end-of-segment marker with audio PCM
-                END_MARKER = 0xFFFFFFFF
-                end_header = make_header(segment_id, END_MARKER, actual_nframes, audio_dur_ms)
-                end_packet = end_header + segment_pcm.tobytes()
-                # NEVER DROP
-                await sess.frame_q.put(end_packet)
-
-                elapsed = time.time() - t0
-                actual_fps = actual_nframes / elapsed if elapsed > 0 else 0
-                print(f"[Session {sess.sid}] [Segment {segment_id}] ✅ Sent {actual_nframes} frames + audio ({elapsed:.2f}s, {actual_fps:.1f} gen-FPS)")
-                
-                # Reset buffer
-                pcm_buffer = np.zeros((0,), dtype=np.int16)
-                buffer_start_time = None
-
-            except Exception as e:
-                print(f"[Session {sess.sid}] worker error: {e}")
-                import traceback
-                traceback.print_exc()
-                pcm_buffer = np.zeros((0,), dtype=np.int16)
-                buffer_start_time = None
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-                    
     except Exception as e:
         print(f"[Session {sess.sid}] Worker fatal error: {e}")
         import traceback
@@ -1004,7 +1154,10 @@ async def idle_info():
         "img_w": idle_cache.img_w,
         "img_h": idle_cache.img_h,
         "duration_seconds": IDLE_DURATION_SECONDS,
-        "fps": IDLE_FPS
+        "fps": IDLE_FPS,
+        # cache position -> source frame index, for walk handoff at
+        # idle/speech transitions
+        "source_map": idle_source_map,
     })
 
 
@@ -1048,19 +1201,42 @@ async def ws_audio(ws: WebSocket, sid: str):
     sess.audio_connected = True
     print(f"[Session {sid}] Audio WebSocket connected")
     chunk_count = 0
-    
+
     try:
         while True:
-            data = await ws.receive_bytes()
+            msg = await ws.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+
+            # Text frames are control messages; binary frames are audio.
+            text = msg.get("text")
+            if text is not None:
+                try:
+                    js = json.loads(text)
+                except (ValueError, TypeError):
+                    continue
+                kind = js.get("type")
+                if kind == "align":
+                    # Client reports where its idle loop is so speech starts
+                    # from the same footage.
+                    _align_walk(sess, int(js.get("source_idx", 0)))
+                    print(f"[Session {sid}] Walk aligned to source {js.get('source_idx')}")
+                elif kind == "reset":
+                    sess.reset_requested = True
+                continue
+
+            data = msg.get("bytes")
+            if not data:
+                continue
             chunk_count += 1
-            
+
             # NEVER drop audio - queue all chunks (accept latency for sync)
             # FLUSH sentinel (b"__FLUSH__") is also passed through here
             await sess.audio_q.put(data)
-            
-            if chunk_count % 10 == 0:
+
+            if chunk_count % 50 == 0:
                 print(f"[Session {sid}] Received {chunk_count} audio chunks, queue size: {sess.audio_q.qsize()}")
-                
+
     except WebSocketDisconnect:
         print(f"[Session {sid}] Audio WebSocket disconnected after {chunk_count} chunks")
     except Exception as e:
@@ -1104,7 +1280,12 @@ async def ws_video(ws: WebSocket, sid: str):
                 packet = await asyncio.wait_for(sess.frame_q.get(), timeout=0.1)
             except asyncio.TimeoutError:
                 continue
-            
+
+            # Text packets are control messages (e.g. utterance_end)
+            if isinstance(packet, str):
+                await ws.send_text(packet)
+                continue
+
             # Packet is already complete (header + data), send directly
             await ws.send_bytes(packet)
             
@@ -1128,10 +1309,7 @@ async def ws_video(ws: WebSocket, sid: str):
     except WebSocketDisconnect:
         print(f"[Session {sid}] Video WebSocket disconnected after {packet_count} packets ({segment_count} segments)")
     except Exception as e:
-        # print(f"[Session {sid}] Video WebSocket error: {e}")
-        # import traceback
-        # traceback.print_exc()
-        pass
+        print(f"[Session {sid}] Video WebSocket error: {e}")
     finally:
         sess.video_connected = False
         if sess and not sess.audio_connected:
@@ -1144,13 +1322,18 @@ async def ws_video(ws: WebSocket, sid: str):
 # Main
 # -----------------------------
 def main():
+    global OUT_SIZE
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--mode", type=str, default="ave", choices=["ave", "hubert", "wenet"])
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5001)
+    parser.add_argument("--out_size", type=int, default=OUT_SIZE,
+                        help="Longest side of streamed frames; 0 = native. "
+                             "Smaller is faster to encode, send, and decode.")
     args = parser.parse_args()
+    OUT_SIZE = args.out_size
 
     initialize_models(args.checkpoint, args.dataset, args.mode)
     

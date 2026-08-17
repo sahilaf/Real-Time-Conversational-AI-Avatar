@@ -1,20 +1,26 @@
 """
-agent.py — SYNCHRONIZED Avatar Playback
+agent_bangla.py — Bangla avatar agent with audio-master playback.
 
-Architecture:
-  1. Gemini audio → server via WS
-  2. Server sends segments: [video frames] + [end-of-segment with PCM audio]
-  3. Client collects COMPLETE segments before playback
-  4. Synchronized playback: audio + video at exactly 25 FPS
+Pipeline:
+    Gemini audio → QueueAudioOutput → WS → avatar server (SyncTalk_2D GPU)
+    Server streams back, PER BATCH: the audio first, then frames as generated.
+    Client plays AUDIO as the master clock; VIDEO slaves to it.
 
-This ensures perfect lip sync by:
-  ✅ Waiting for all frames + audio for each segment
-  ✅ Playing audio and video together at matched timing
-  ✅ Constant 25 FPS output (40ms per frame)
+Why audio-master: the GPU cannot always sustain 25 gen-FPS. If audio waits for
+video (the old design), every GPU hiccup becomes an audible gap mid-sentence.
+Here audio is pushed on its own paced schedule and never waits; a late video
+frame is skipped or the previous frame is held — a briefly frozen mouth instead
+of broken speech.
+
+Transitions: idle and speech share one base-frame walk. The client tells the
+server where its idle loop is before each utterance ("align"), the server
+reports where the walk ended after each utterance ("utterance_end"), and the
+client resumes idle there — plus a short crossfade both ways.
 """
 
 import os
 import io
+import json
 import cv2
 import time
 import asyncio
@@ -25,8 +31,8 @@ import requests
 import websockets
 import aiohttp
 import soundfile as sf
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 from collections import deque
 
 from dotenv import load_dotenv
@@ -42,31 +48,26 @@ logger = logging.getLogger("agent")
 
 AVATAR_BASE = os.getenv("AVATAR_BASE", "http://127.0.0.1:5001")
 ASSISTANT_SR = int(os.getenv("ASSISTANT_SR", "24000"))
+GEMINI_MODEL = os.getenv("GEMINI_REALTIME_MODEL", "gemini-2.5-flash-native-audio-latest")
 
 VIDEO_TRACK_NAME = os.getenv("VIDEO_TRACK_NAME", "agent_video")
 AUDIO_TRACK_NAME = os.getenv("AUDIO_TRACK_NAME", "agent_audio")
 
 VIDEO_FPS = 25
-FRAME_DURATION_S = 1.0 / VIDEO_FPS  # 40ms per frame
-AUDIO_PACKET_S = 0.04  # 40ms audio packets (larger = smoother)
+FRAME_S = 1.0 / VIDEO_FPS           # 40 ms per video frame
+
+AUDIO_PUSH_S = 0.02                  # 20 ms audio frames to LiveKit
+AUDIO_LEAD_S = 0.20                  # how far audio may run ahead of the clock
+# The server emits frames in batches (one per audio fold), so the client sees
+# bursts, not a steady 25/s. The gate must cover at least one full batch
+# interval or playback starts right before the buffer runs dry and every
+# batch boundary becomes a hold-then-skip.
+GATE_FRAMES = 8                      # video frames buffered before starting
+GATE_TIMEOUT_S = 0.45                # ...or start after this long regardless
+CROSSFADE_FRAMES = 3                 # blended frames at idle<->speech edges
 
 END_MARKER = 0xFFFFFFFF
-
-# Idle animation cache
-@dataclass
-class IdleFramesCache:
-    """Cache of idle animation frames fetched from server"""
-    frames: List[bytes]  # List of jpg bytes
-    frame_count: int
-    img_w: int
-    img_h: int
-    
-    def get_frame(self, index: int) -> bytes:
-        """Get frame at index, wrapping around for looping"""
-        return self.frames[index % len(self.frames)]
-
-idle_frames_cache: Optional[IdleFramesCache] = None
-
+FLUSH_SENTINEL = b"__FLUSH__"
 
 QueueAudioOutput = None
 AudioSegmentEnd = None
@@ -119,9 +120,7 @@ def get_avatar_size() -> tuple[int, int]:
     try:
         r = requests.get(f"{AVATAR_BASE}/health", timeout=5)
         r.raise_for_status()
-        js = r.json()
-        sz = js.get("image_size", "0x0")
-        w, h = sz.split("x")
+        w, h = r.json().get("image_size", "0x0").split("x")
         return int(w), int(h)
     except Exception:
         return 450, 450
@@ -137,467 +136,413 @@ def pcm16_bytes_to_wav_bytes(pcm_bytes: bytes, sr: int) -> bytes:
 
 
 # -----------------------------
-# Segment Data Structure
+# Idle animation cache
 # -----------------------------
 @dataclass
-class Segment:
-    """A complete audio-video segment for synchronized playback"""
-    segment_id: int
-    total_frames: int
-    audio_duration_ms: int
-    video_frames: List[bytes] = field(default_factory=list)  # List of jpg bytes
-    audio_pcm: Optional[bytes] = None  # PCM16 audio bytes
-    
-    def is_complete(self) -> bool:
-        """Check if segment has all video frames and audio"""
-        return (
-            len(self.video_frames) == self.total_frames and 
-            self.audio_pcm is not None
-        )
+class IdleFrames:
+    frames: List[bytes]                # jpg per cache position
+    source_map: List[int]              # cache position -> source frame index
+
+    def pos_for_source(self, source_idx: int) -> int:
+        """Cache position showing the frame nearest to source_idx."""
+        if not self.source_map:
+            return 0
+        return min(range(len(self.source_map)),
+                   key=lambda i: abs(self.source_map[i] - source_idx))
 
 
-# -----------------------------
-# Audio sender (Gemini → Server)
-# -----------------------------
-FLUSH_SENTINEL = b"__FLUSH__"
-
-async def pcm_fanout(queue_audio, pcm_q_ws: asyncio.Queue):
-    """
-    SINGLE consumer of QueueAudioOutput => sends to server WS queue.
-    Audio is synced with video - both come back together in segments.
-    """
-    async for item in queue_audio:
-        if AudioSegmentEnd is not None and isinstance(item, AudioSegmentEnd):
-            await pcm_q_ws.put(FLUSH_SENTINEL)
-            continue
-            
-        pcm = np.frombuffer(bytes(item.data), dtype=np.int16)
-        if pcm.size == 0:
-            continue
-        b = pcm.tobytes()
-
-        # Send to server for synced video generation
-        await pcm_q_ws.put(b)
-
-
-async def ws_send_pcm(pcm_q_ws: asyncio.Queue, ws_audio, sr: int = ASSISTANT_SR, batch_size_ms: int = 40):
-    """
-    Send PCM audio to avatar server via WebSocket.
-    Batches small chunks together and sends as single WAV file.
-    NEVER drops audio. Handles flushing.
-    """
-    pcm_buffer = np.zeros((0,), dtype=np.int16)
-    last_send_time = time.time()
-    batch_samples = int(sr * batch_size_ms / 1000.0)
-    
-    while True:
-        force_flush = False
-        try:
-            # Get audio with timeout
-            b = await asyncio.wait_for(pcm_q_ws.get(), timeout=0.05)
-            
-            if b == FLUSH_SENTINEL:
-                force_flush = True
-            else:
-                pcm = np.frombuffer(b, dtype=np.int16)
-                pcm_buffer = np.concatenate([pcm_buffer, pcm])
-            
-            pcm_q_ws.task_done()
-            
-        except asyncio.TimeoutError:
-            # Send buffered audio if enough time has passed
-            if pcm_buffer.size > 0 and (time.time() - last_send_time >= batch_size_ms / 1000.0):
-                pass  # Will send below
-            else:
-                continue
-        
-        # Check if we should send the buffer
-        should_send = False
-        if pcm_buffer.size > 0:
-            buffer_age = time.time() - last_send_time
-            # Send if: buffer is large enough OR old enough OR queue is filling up
-            if pcm_buffer.size >= batch_samples or buffer_age >= 0.25 or pcm_q_ws.qsize() > 50:
-                should_send = True
-        
-        if force_flush:
-            should_send = True
-            
-        if not should_send:
-            continue
-        
-        try:
-            # NO DROPPING HERE!
-            
-            # Convert PCM buffer to single WAV file
-            if pcm_buffer.size > 0:
-                wav_bytes = pcm16_bytes_to_wav_bytes(pcm_buffer.tobytes(), sr)
-                if wav_bytes:
-                    await ws_audio.send(wav_bytes)
-                    logger.debug(f"Sent {len(wav_bytes)} bytes ({pcm_buffer.size / sr:.3f}s) to avatar server")
-                
-                pcm_buffer = np.zeros((0,), dtype=np.int16)
-                last_send_time = time.time()
-            
-            if force_flush:
-                # Send special flush marker to server
-                await ws_audio.send(FLUSH_SENTINEL)
-                logger.debug("Sent FLUSH signal to server")
-            
-        except Exception as e:
-            logger.error(f"Error sending audio to WS: {e}")
-            pcm_buffer = np.zeros((0,), dtype=np.int16)
-
-
-# -----------------------------
-# Idle Frames Fetcher
-# -----------------------------
-async def fetch_idle_frames(base_url: str) -> Optional[IdleFramesCache]:
-    """Fetch idle animation frames from server"""
-    global idle_frames_cache
-    
+async def fetch_idle_frames(base_url: str) -> Optional[IdleFrames]:
     try:
-        # Get idle info
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{base_url}/idle/info") as resp:
+        async with aiohttp.ClientSession() as http:
+            async with http.get(f"{base_url}/idle/info") as resp:
                 if resp.status != 200:
                     logger.warning("Idle cache not available on server")
                     return None
                 info = await resp.json()
-        
-        if not info.get("ready"):
-            logger.warning("Server idle cache not ready")
-            return None
-        
-        frame_count = info["frame_count"]
-        img_w = info["img_w"]
-        img_h = info["img_h"]
-        
-        logger.info(f"[IDLE] Fetching {frame_count} idle frames from server...")
-        
-        # Fetch all frames
-        frames = []
-        async with aiohttp.ClientSession() as session:
-            for i in range(frame_count):
-                async with session.get(f"{base_url}/idle/frame/{i}") as resp:
+            if not info.get("ready"):
+                logger.warning("Server idle cache not ready")
+                return None
+
+            count = info["frame_count"]
+            frames = []
+            for i in range(count):
+                async with http.get(f"{base_url}/idle/frame/{i}") as resp:
                     if resp.status == 200:
                         frames.append(await resp.read())
-                
-                if (i + 1) % 25 == 0:
-                    logger.info(f"[IDLE] Fetched {i + 1}/{frame_count} frames...")
-        
-        if len(frames) == 0:
-            logger.warning("No idle frames fetched")
+
+        if not frames:
             return None
-        
-        idle_frames_cache = IdleFramesCache(
-            frames=frames,
-            frame_count=len(frames),
-            img_w=img_w,
-            img_h=img_h
-        )
-        
-        logger.info(f"[IDLE] ✅ Cached {len(frames)} idle frames")
-        return idle_frames_cache
-        
+        source_map = info.get("source_map") or list(range(len(frames)))
+        logger.info(f"[IDLE] Cached {len(frames)} idle frames "
+                    f"(source {source_map[0]}..{source_map[-1]})")
+        return IdleFrames(frames=frames, source_map=source_map[:len(frames)])
     except Exception as e:
         logger.error(f"Error fetching idle frames: {e}")
         return None
 
 
 # -----------------------------
-# Segment Receiver (Server → Client)
+# Stream state
 # -----------------------------
-async def receive_segments(ws_video, segment_q: asyncio.Queue):
+@dataclass
+class Utterance:
+    start: int                          # first global frame number
+    nframes: Optional[int] = None       # set by utterance_end
+    t0: Optional[float] = None          # wall clock when playback started
+    audio_done: bool = False            # all PCM pushed to LiveKit
+    samples_pushed: int = 0             # PCM samples already sent to LiveKit
+
+
+class AvatarStream:
+    """Shared state between the receiver, audio pump, and video pump.
+
+    Single event loop, no locks. Global frame numbers are continuous across
+    utterances; each utterance records which range it owns.
     """
-    Receive segment packets from server and assemble complete segments.
-    
-    Packet format (16-byte header):
-        [4B segment_id][4B frame_index][4B total_frames][4B audio_duration_ms] + data
-        
-    When frame_index == 0xFFFFFFFF, it's an end-of-segment marker with PCM audio.
-    """
-    pending_segments = {}  # segment_id -> Segment
-    segments_completed = 0
-    
-    while True:
-        try:
-            msg = await ws_video.recv()
-            if isinstance(msg, str):
+
+    def __init__(self, idle: Optional[IdleFrames]):
+        self.idle = idle
+        self.video_buf: Dict[int, bytes] = {}       # global frame no -> jpg
+        self.audio_q: asyncio.Queue = asyncio.Queue()   # np.int16 | None sentinel
+        self.seg_base: Dict[int, int] = {}          # segment id -> global base
+        self.next_global = 0
+        self.utterances: deque[Utterance] = deque()
+        self.resume_source_idx: Optional[int] = None
+        self.idle_pos = 0                           # position in the idle cache
+        self.need_align = True                      # send align before next audio
+
+    # -- receiver side --------------------------------------------------
+    def on_audio_packet(self, seg_id: int, nframes: int, pcm: np.ndarray):
+        if not self.utterances or self.utterances[-1].nframes is not None:
+            self.utterances.append(Utterance(start=self.next_global))
+        self.seg_base[seg_id] = self.next_global
+        self.next_global += nframes
+        self.audio_q.put_nowait(pcm)
+
+    def on_frame_packet(self, seg_id: int, frame_idx: int, jpg: bytes):
+        base = self.seg_base.get(seg_id)
+        if base is not None:
+            self.video_buf[base + frame_idx] = jpg
+
+    def on_utterance_end(self, frames: int, end_source_idx: Optional[int]):
+        for utt in self.utterances:
+            if utt.nframes is None:
+                utt.nframes = frames
+                break
+        self.resume_source_idx = end_source_idx
+        self.audio_q.put_nowait(None)               # delimiter for the pump
+
+    # -- shared ---------------------------------------------------------
+    def active_utterance(self) -> Optional[Utterance]:
+        while self.utterances:
+            utt = self.utterances[0]
+            if utt.t0 is None:
+                return None                          # not started yet
+            if utt.nframes is not None and utt.audio_done and \
+               (time.monotonic() - utt.t0) * VIDEO_FPS >= utt.nframes:
+                # fully played out; drop it and any stale frames
+                for g in [g for g in self.video_buf if g < utt.start + utt.nframes]:
+                    self.video_buf.pop(g, None)
+                self.utterances.popleft()
                 continue
-            if not msg or len(msg) < 16:
-                continue
+            return utt
+        return None
 
-            # Parse 16-byte header
-            segment_id = int.from_bytes(msg[0:4], "little", signed=False)
-            frame_index = int.from_bytes(msg[4:8], "little", signed=False)
-            total_frames = int.from_bytes(msg[8:12], "little", signed=False)
-            audio_dur_ms = int.from_bytes(msg[12:16], "little", signed=False)
-            data = msg[16:]
-            
-            # Get or create pending segment
-            if segment_id not in pending_segments:
-                pending_segments[segment_id] = Segment(
-                    segment_id=segment_id,
-                    total_frames=total_frames,
-                    audio_duration_ms=audio_dur_ms,
-                    video_frames=[None] * total_frames  # Pre-allocate
-                )
-            
-            seg = pending_segments[segment_id]
-            
-            if frame_index == END_MARKER:
-                # End-of-segment marker with audio PCM
-                seg.audio_pcm = data
-                logger.debug(f"[Segment {segment_id}] Received audio PCM ({len(data)} bytes)")
-            else:
-                # Video frame
-                if frame_index < len(seg.video_frames):
-                    seg.video_frames[frame_index] = data
-                logger.debug(f"[Segment {segment_id}] Received frame {frame_index + 1}/{total_frames}")
-            
-            # Check if segment is complete
-            if seg.is_complete():
-                # Verify all frames are present (not None)
-                if all(f is not None for f in seg.video_frames):
-                    segments_completed += 1
-                    logger.info(f"[SYNC] Segment {segment_id} complete: {len(seg.video_frames)} frames for {seg.audio_duration_ms}ms audio")
-                    
-                    # Send to playback queue
-                    await segment_q.put(seg)
-                    
-                    # Clean up
-                    del pending_segments[segment_id]
-                else:
-                    logger.warning(f"[Segment {segment_id}] Has null frames, waiting for retransmit")
-                    
-        except Exception as e:
-            logger.error(f"Error receiving segment: {e}")
-            await asyncio.sleep(0.01)
+    def speaking(self) -> bool:
+        return self.active_utterance() is not None
+
+    def idle_source_idx(self) -> int:
+        if self.idle and self.idle.source_map:
+            return self.idle.source_map[self.idle_pos % len(self.idle.source_map)]
+        return 0
+
+    def make_align_message(self) -> str:
+        return json.dumps({"type": "align", "source_idx": self.idle_source_idx()})
 
 
 # -----------------------------
-# Synchronized Playback
+# Gemini → server
 # -----------------------------
-async def synchronized_playback(
-    segment_q: asyncio.Queue,
-    video_source: rtc.VideoSource,
-    audio_source: rtc.AudioSource,
-    img_w: int,
-    img_h: int
-):
-    """
-    Play audio and video in perfect sync at exactly 25 FPS.
-    When buffer is empty, play idle animation for lifelike appearance.
-    
-    For each complete segment:
-    1. Start audio and video playback together
-    2. Pace video frames at 40ms intervals (25 FPS)
-    3. Pace audio packets to match video timing
-    """
-    global idle_frames_cache
-    
-    segments_played = 0
-    total_frames_played = 0
-    idle_frame_index = 0
-    last_frame_time = time.monotonic()
-    
-    audio_packet_samples = int(ASSISTANT_SR * AUDIO_PACKET_S)  # 960 samples per 40ms
-    
-    async def publish_video_frame(jpg_bytes: bytes) -> bool:
-        """Publish a single video frame"""
-        try:
-            arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
-            frame_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame_bgr is None:
-                return False
-            
-            h, w = frame_bgr.shape[:2]
-            frame_i420 = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2YUV_I420)
-            
-            vf = rtc.VideoFrame(
-                width=w,
-                height=h,
-                type=rtc.VideoBufferType.I420,
-                data=frame_i420.tobytes(),
-            )
-            await capture_maybe_async(video_source, vf)
-            return True
-        except Exception as e:
-            logger.error(f"Error publishing video frame: {e}")
-            return False
-    
-    async def play_idle_frame() -> bool:
-        """Play a single idle frame at 25 FPS"""
-        nonlocal idle_frame_index, last_frame_time
-        
-        if idle_frames_cache is None or len(idle_frames_cache.frames) == 0:
-            await asyncio.sleep(FRAME_DURATION_S)
-            return False
-        
-        # Wait for correct frame timing (25 FPS)
-        current_time = time.monotonic()
-        time_since_last = current_time - last_frame_time
-        if time_since_last < FRAME_DURATION_S:
-            await asyncio.sleep(FRAME_DURATION_S - time_since_last)
-        
-        jpg_bytes = idle_frames_cache.get_frame(idle_frame_index)
-        await publish_video_frame(jpg_bytes)
-        
-        idle_frame_index = (idle_frame_index + 1) % idle_frames_cache.frame_count
-        last_frame_time = time.monotonic()
-        return True
-    
-    logger.info("[PLAYBACK] Starting Jitter Buffer Mode (Start @ 6 frames)")
-    
-    playback_q = asyncio.Queue(maxsize=1000)
-    
-    # Task: Buffer filler (Deque segments -> frames/audio)
-    async def buffer_worker():
-        while True:
-            try:
-                # Wait for segment
-                seg = await segment_q.get()
-                
-                nframes = len(seg.video_frames)
-                if nframes == 0: continue
-                
-                pcm_full = np.frombuffer(seg.audio_pcm, dtype=np.int16)
-                total_samples = len(pcm_full)
-                
-                # Split audio per frame
-                samples_per_frame = total_samples // nframes
-                remainder = total_samples % nframes
-                
-                offset = 0
-                for i in range(nframes):
-                    current_samples = samples_per_frame + (1 if i < remainder else 0)
-                    chunk = pcm_full[offset : offset + current_samples]
-                    offset += current_samples
-                    
-                    frame_dur = current_samples / float(ASSISTANT_SR)
-                    
-                    await playback_q.put((seg.video_frames[i], chunk, frame_dur))
-                    
-            except Exception as e:
-                logger.error(f"Buffer worker error: {e}")
-                await asyncio.sleep(0.01)
-
-    asyncio.create_task(buffer_worker())
-    
-    last_frame_bytes = None
-    last_activity_time = time.monotonic()
-    
-    # FIX 5: Adaptive buffering for optimal latency/reliability balance
-    MIN_BUFFER = 12  # Initial buffer: 480ms (good balance)
-    RESUME_BUFFER = 25  # After underrun: 1s (more conservative)
-    currently_underrun = False  # Track if we just had an underrun
-    is_playing = False
-    
-    while True:
-        # State 1: Buffering / Idle
-        if not is_playing:
-            current_qsize = playback_q.qsize()
-            
-            # Use adaptive threshold based on underrun history
-            required_buffer = RESUME_BUFFER if currently_underrun else MIN_BUFFER
-            
-            if current_qsize >= required_buffer:
-                is_playing = True
-                currently_underrun = False  # Reset underrun flag
-                last_activity_time = time.monotonic()
-                logger.info(f"▶️ Playback Started (Buffered {current_qsize} frames)")
-            else:
-                # Idle Timeout Check
-                if time.monotonic() - last_activity_time > 1.5:
-                    await play_idle_frame()
-                    continue
-                else:
-                    # Hold last frame (freeze)
-                    if last_frame_bytes:
-                        await publish_video_frame(last_frame_bytes)
-                    else:
-                        await play_idle_frame()
-                    await asyncio.sleep(0.02)
-                    continue
-
-        # State 2: Playing
-        if playback_q.empty():
-            # Underrun - switch to buffering mode
-            is_playing = False
-            currently_underrun = True  # Mark that we had an underrun
-            logger.warning(f"⏸️ Buffer underrun - switching to buffering (will need {RESUME_BUFFER} frames)")
+async def pcm_fanout(queue_audio, pcm_q_ws: asyncio.Queue, st: AvatarStream):
+    """Single consumer of QueueAudioOutput; forwards PCM to the server queue."""
+    async for item in queue_audio:
+        if AudioSegmentEnd is not None and isinstance(item, AudioSegmentEnd):
+            await pcm_q_ws.put(FLUSH_SENTINEL)
+            st.need_align = True                    # next utterance re-aligns
             continue
-            
+        pcm = np.frombuffer(bytes(item.data), dtype=np.int16)
+        if pcm.size:
+            await pcm_q_ws.put(pcm.tobytes())
+
+
+async def ws_send_pcm(pcm_q_ws: asyncio.Queue, ws_audio, st: AvatarStream,
+                      sr: int = ASSISTANT_SR, batch_ms: int = 40):
+    """Batch PCM into WAV chunks and send to the avatar server. Never drops.
+
+    Before the first audio of each utterance, sends an "align" control message
+    so the server starts its base-frame walk where the idle loop currently is.
+    """
+    buf = np.zeros(0, dtype=np.int16)
+    last_send = time.monotonic()
+    batch_samples = int(sr * batch_ms / 1000.0)
+
+    while True:
+        force_flush = False
         try:
-            # Play
-            frame, audio_chunk, dur = await playback_q.get()
-            last_activity_time = time.monotonic()
-            last_frame_bytes = frame
-            
-            # Publish Video
-            await publish_video_frame(frame)
-            
-            # Publish Audio
-            if len(audio_chunk) > 0:
-                 af = rtc.AudioFrame(
-                    data=audio_chunk.tobytes(),
-                    sample_rate=ASSISTANT_SR,
-                    num_channels=1,
-                    samples_per_channel=len(audio_chunk)
-                 )
-                 await capture_maybe_async(audio_source, af)
-            
-            # Wait
-            await asyncio.sleep(dur)
-            
+            b = await asyncio.wait_for(pcm_q_ws.get(), timeout=0.05)
+            if b == FLUSH_SENTINEL:
+                force_flush = True
+            else:
+                buf = np.concatenate([buf, np.frombuffer(b, dtype=np.int16)])
+        except asyncio.TimeoutError:
+            pass
+
+        age = time.monotonic() - last_send
+        if not force_flush and (buf.size < batch_samples and age < 0.25):
+            continue
+        if buf.size == 0 and not force_flush:
+            continue
+
+        try:
+            if buf.size > 0:
+                if st.need_align:
+                    await ws_audio.send(st.make_align_message())
+                    st.need_align = False
+                wav = pcm16_bytes_to_wav_bytes(buf.tobytes(), sr)
+                if wav:
+                    await ws_audio.send(wav)
+                buf = np.zeros(0, dtype=np.int16)
+                last_send = time.monotonic()
+            if force_flush:
+                await ws_audio.send(FLUSH_SENTINEL)
         except Exception as e:
-            logger.error(f"Playback error: {e}")
-            await asyncio.sleep(0.04)
-            
+            logger.error(f"Error sending audio to WS: {e}")
+            buf = np.zeros(0, dtype=np.int16)
 
 
+# -----------------------------
+# Server → client
+# -----------------------------
+async def receive_stream(ws_video, st: AvatarStream):
+    """Parse the server stream into the shared state.
 
+    Binary: 16-byte header [seg_id][frame_idx][total][dur_ms] + payload.
+        frame_idx == END_MARKER → payload is the batch PCM (arrives FIRST).
+        otherwise               → payload is a jpg frame.
+    Text: {"type": "utterance_end", "frames": N, "end_source_idx": i}
+    """
+    while True:
+        msg = await ws_video.recv()
+        if isinstance(msg, str):
+            try:
+                js = json.loads(msg)
+            except ValueError:
+                continue
+            if js.get("type") == "utterance_end":
+                st.on_utterance_end(int(js.get("frames", 0)),
+                                    js.get("end_source_idx"))
+            continue
+
+        if len(msg) < 16:
+            continue
+        seg_id = int.from_bytes(msg[0:4], "little")
+        frame_idx = int.from_bytes(msg[4:8], "little")
+        nframes = int.from_bytes(msg[8:12], "little")
+        payload = msg[16:]
+
+        if frame_idx == END_MARKER:
+            st.on_audio_packet(seg_id, nframes,
+                               np.frombuffer(payload, dtype=np.int16))
+        else:
+            st.on_frame_packet(seg_id, frame_idx, payload)
+
+
+# -----------------------------
+# Audio pump — the master clock
+# -----------------------------
+async def audio_pump(st: AvatarStream, audio_source: rtc.AudioSource):
+    """Push PCM to LiveKit on an absolute schedule. Never waits for video.
+
+    Per utterance: gate briefly so the first video frames exist, anchor the
+    clock (utt.t0), then push 20 ms frames capped AUDIO_LEAD_S ahead of the
+    clock. A None sentinel delimits utterances.
+    """
+    push_samples = int(ASSISTANT_SR * AUDIO_PUSH_S)
+
+    while True:
+        pcm = await st.audio_q.get()
+
+        if pcm is None:
+            # utterance delimiter: audio arrives in order, so this closes the
+            # OLDEST open utterance only. Closing all of them (the previous
+            # version) let one delimiter swallow a later utterance's audio.
+            for utt in st.utterances:
+                if not utt.audio_done:
+                    utt.audio_done = True
+                    break
+            continue
+
+        # audio belongs to the oldest utterance still expecting it
+        utt = next((u for u in st.utterances if not u.audio_done), None)
+        if utt is None:
+            continue                                  # stale audio after reset
+
+        if utt.t0 is None:
+            # Strictly serial playback: never anchor this utterance's clock
+            # while an earlier one is still playing out, or its video timeline
+            # starts in the past and the pump skips a burst of frames.
+            while st.utterances and st.utterances[0] is not utt:
+                st.active_utterance()      # lets finished utterances retire
+                await asyncio.sleep(0.05)
+
+            gate_t0 = time.monotonic()
+            while (sum(1 for g in st.video_buf if g >= utt.start) < GATE_FRAMES
+                   and time.monotonic() - gate_t0 < GATE_TIMEOUT_S):
+                await asyncio.sleep(0.02)
+            utt.t0 = time.monotonic()
+            logger.info(f"▶️ Utterance started (global frame {utt.start})")
+
+        pending = pcm
+        while pending.size > 0:
+            chunk, pending = pending[:push_samples], pending[push_samples:]
+            # cap how far audio runs ahead of the playback clock
+            target = utt.t0 + utt.samples_pushed / ASSISTANT_SR - AUDIO_LEAD_S
+            await sleep_until(target)
+            af = rtc.AudioFrame(
+                data=chunk.tobytes(),
+                sample_rate=ASSISTANT_SR,
+                num_channels=1,
+                samples_per_channel=len(chunk),
+            )
+            await capture_maybe_async(audio_source, af)
+            utt.samples_pushed += len(chunk)
+
+
+# -----------------------------
+# Video pump — slaved to the audio clock
+# -----------------------------
+async def video_pump(st: AvatarStream, video_source: rtc.VideoSource):
+    """Publish one frame every 40 ms on an absolute schedule.
+
+    Speaking: show the newest buffered frame at or before the audio clock,
+    dropping older ones; hold the last frame when the GPU is behind.
+    Idle: loop the cached idle animation.
+    Transitions crossfade over CROSSFADE_FRAMES frames both ways.
+    """
+    last_bgr: Optional[np.ndarray] = None
+    last_played_global = -1
+    crossfade_left = 0
+
+    def decode(jpg: bytes) -> Optional[np.ndarray]:
+        arr = np.frombuffer(jpg, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    async def publish(bgr: np.ndarray):
+        nonlocal last_bgr, crossfade_left
+        if crossfade_left > 0 and last_bgr is not None and \
+                last_bgr.shape == bgr.shape:
+            alpha = 1.0 - crossfade_left / (CROSSFADE_FRAMES + 1)
+            bgr = cv2.addWeighted(bgr, alpha, last_bgr, 1.0 - alpha, 0)
+            crossfade_left -= 1
+        else:
+            crossfade_left = 0
+        last_bgr = bgr
+        h, w = bgr.shape[:2]
+        i420 = cv2.cvtColor(bgr, cv2.COLOR_BGR2YUV_I420)
+        vf = rtc.VideoFrame(width=w, height=h,
+                            type=rtc.VideoBufferType.I420,
+                            data=i420.tobytes())
+        await capture_maybe_async(video_source, vf)
+
+    was_speaking = False
+    next_t = time.monotonic()
+
+    while True:
+        next_t += FRAME_S
+        await sleep_until(next_t)
+
+        utt = st.active_utterance()
+
+        if utt is not None:
+            if not was_speaking:
+                was_speaking = True
+                crossfade_left = CROSSFADE_FRAMES       # idle -> speech blend
+            # frame the audio clock says we should be showing, clamped so a
+            # finishing utterance never pulls in the next utterance's frames
+            target = utt.start + int((time.monotonic() - utt.t0) * VIDEO_FPS)
+            if utt.nframes is not None:
+                target = min(target, utt.start + utt.nframes - 1)
+            best = None
+            for g in st.video_buf:
+                if utt.start <= g <= target and (best is None or g > best):
+                    best = g
+            if best is not None and best > last_played_global:
+                jpg = st.video_buf.pop(best)
+                # evict anything older; it will never be shown
+                for g in [g for g in st.video_buf if g < best]:
+                    st.video_buf.pop(g, None)
+                bgr = decode(jpg)
+                if bgr is not None:
+                    last_played_global = best
+                    await publish(bgr)
+                    continue
+            # nothing new in time: hold the last frame
+            if last_bgr is not None:
+                await publish(last_bgr)
+            continue
+
+        # ---- idle ----------------------------------------------------
+        if was_speaking:
+            was_speaking = False
+            crossfade_left = CROSSFADE_FRAMES           # speech -> idle blend
+            if st.idle and st.resume_source_idx is not None:
+                st.idle_pos = st.idle.pos_for_source(st.resume_source_idx)
+                st.resume_source_idx = None
+
+        if st.idle and st.idle.frames:
+            bgr = decode(st.idle.frames[st.idle_pos % len(st.idle.frames)])
+            st.idle_pos = (st.idle_pos + 1) % len(st.idle.frames)
+            if bgr is not None:
+                await publish(bgr)
+        elif last_bgr is not None:
+            await publish(last_bgr)
+
+
+# -----------------------------
+# Entrypoint
+# -----------------------------
 async def entrypoint(ctx: JobContext):
     import_queue_audio_output()
 
     logger.info("Connecting LiveKit...")
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-    logger.info("Connected LiveKit.")
 
     w, h = get_avatar_size()
     logger.info(f"Avatar server image_size: {w}x{h}")
 
     sid = await asyncio.to_thread(create_session)
     logger.info(f"Created avatar session: {sid}")
-    
-    # Fetch idle animation frames from server
-    await fetch_idle_frames(AVATAR_BASE)
 
-    ws_audio_url = AVATAR_BASE.replace("http://", "ws://").replace("https://", "wss://") + f"/ws/audio/{sid}"
-    ws_video_url = AVATAR_BASE.replace("http://", "ws://").replace("https://", "wss://") + f"/ws/video/{sid}"
+    idle = await fetch_idle_frames(AVATAR_BASE)
+    st = AvatarStream(idle)
 
-    # Create sources with real dimensions
+    ws_base = AVATAR_BASE.replace("http://", "ws://").replace("https://", "wss://")
+    ws_audio_url = f"{ws_base}/ws/audio/{sid}"
+    ws_video_url = f"{ws_base}/ws/video/{sid}"
+
     video_source = rtc.VideoSource(w, h)
     audio_source = rtc.AudioSource(sample_rate=ASSISTANT_SR, num_channels=1)
-
-    # Create tracks
     video_track = create_local_video_track(VIDEO_TRACK_NAME, video_source)
     audio_track = create_local_audio_track(AUDIO_TRACK_NAME, audio_source)
 
-    # Publish with explicit options
-    video_options = rtc.TrackPublishOptions(
-        source=rtc.TrackSource.SOURCE_CAMERA,
-    )
-    audio_options = rtc.TrackPublishOptions(
-        source=rtc.TrackSource.SOURCE_MICROPHONE,
-    )
-
-    await ctx.room.local_participant.publish_track(video_track, video_options)
-    await ctx.room.local_participant.publish_track(audio_track, audio_options)
+    await ctx.room.local_participant.publish_track(
+        video_track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA))
+    await ctx.room.local_participant.publish_track(
+        audio_track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE))
     logger.info(f"Published tracks: {VIDEO_TRACK_NAME}, {AUDIO_TRACK_NAME}")
 
     model = google.realtime.RealtimeModel(
-        model="gemini-2.5-flash-native-audio-preview-12-2025",
+        model=GEMINI_MODEL,
         voice="Puck",
         temperature=0.7,
         instructions="""You are Redwan, a helpful AI avatar assistant who ONLY speaks Bangla.
@@ -614,12 +559,12 @@ INTERACTION STYLE:
 - If asked about your identity, say you are Redwan, an AI assistant.
 """,
     )
-    agent = Agent(llm=model, instructions="You are Redwan, a helpful AI avatar assistant. Speak ONLY in Bangla. Keep responses concise.")
+    agent = Agent(llm=model,
+                  instructions="You are Redwan, a helpful AI avatar assistant. "
+                               "Speak ONLY in Bangla. Keep responses concise.")
     session = AgentSession()
 
     queue_audio = QueueAudioOutput(sample_rate=ASSISTANT_SR)
-
-    # Attach QueueAudioOutput robustly
     if hasattr(session, "output") and hasattr(session.output, "audio"):
         session.output.audio = queue_audio
     elif hasattr(session, "output_audio"):
@@ -627,57 +572,68 @@ INTERACTION STYLE:
     else:
         raise RuntimeError("Cannot attach QueueAudioOutput for this livekit-agents version.")
 
-    opts = room_io.RoomOptions(
-        audio_input=True,
-        audio_output=False,
-        text_input=True,  # Enable user speech transcription display
-        text_output=True,  # Enable AI response text display
-        video_input=False,
-    )
-
-    # Keep agent alive if Playground participant disconnects
+    # With text_output enabled, livekit-agents wraps the audio output in a
+    # transcript synchronizer. That wrapper's flush() crashes (ChanClosed in
+    # transcription/_speaking_rate) after the first response when the output is
+    # a custom queue, and after the internal reconnect our queue is no longer
+    # the sink - the agent then answers exactly one question. Disable the sync
+    # if this livekit-agents version supports it; transcripts still flow, they
+    # are just not word-timed to the audio.
     try:
-        if hasattr(opts, "input") and opts.input and hasattr(opts.input, "close_on_disconnect"):
-            opts.input.close_on_disconnect = False
-        else:
-            opts.input = room_io.RoomInputOptions(close_on_disconnect=False)
-    except Exception:
-        pass
+        text_out = room_io.TextOutputOptions(sync_transcription=False)
+    except TypeError:
+        text_out = True
+        logger.warning("This livekit-agents has no sync_transcription option; "
+                       "relying on the post-start re-attach instead.")
+    try:
+        opts = room_io.RoomOptions(
+            audio_input=True,
+            audio_output=False,
+            text_input=True,
+            text_output=text_out,
+            video_input=False,
+            close_on_disconnect=False,   # keep alive if Playground disconnects
+        )
+    except TypeError:
+        opts = room_io.RoomOptions(
+            audio_input=True, audio_output=False,
+            text_input=True, text_output=True, video_input=False)
 
     await session.start(room=ctx.room, agent=agent, room_options=opts)
-    logger.info("Gemini session started. Connecting WS...")
 
-    # Queues for synchronized playback - large enough for complete responses
-    # Queues for synchronized playback - large enough for complete responses (NEVER DROP)
-    pcm_q_ws = asyncio.Queue(maxsize=2000)  # Gemini audio → server
-    segment_q = asyncio.Queue(maxsize=300)  # User requested 300
+    # Re-attach AFTER start: if session.start wrapped or replaced the audio
+    # output (transcript synchronizer, room IO), this restores our queue as
+    # the direct sink for every subsequent response.
+    if hasattr(session, "output") and hasattr(session.output, "audio"):
+        if session.output.audio is not queue_audio:
+            logger.info("Audio output was wrapped by session.start; re-attaching queue.")
+            session.output.audio = queue_audio
+
+    logger.info(f"Gemini session started (model={GEMINI_MODEL}). Connecting WS...")
+
+    pcm_q_ws = asyncio.Queue(maxsize=2000)
 
     async with websockets.connect(ws_audio_url, max_size=None) as wsa, \
                websockets.connect(ws_video_url, max_size=None) as wsv:
-        logger.info("Connected to GPU avatar server via WebSockets.")
-        logger.info("🎯 SYNCHRONIZED PLAYBACK MODE: Segments will play with perfect lip sync")
+        logger.info("Connected to GPU avatar server. Audio-master playback active.")
 
         tasks = [
-            asyncio.create_task(pcm_fanout(queue_audio, pcm_q_ws), name="pcm_fanout"),
-            asyncio.create_task(ws_send_pcm(pcm_q_ws, wsa), name="ws_send_pcm"),
-            asyncio.create_task(receive_segments(wsv, segment_q), name="receive_segments"),
-            asyncio.create_task(
-                synchronized_playback(segment_q, video_source, audio_source, w, h),
-                name="synchronized_playback"
-            ),
+            asyncio.create_task(pcm_fanout(queue_audio, pcm_q_ws, st), name="pcm_fanout"),
+            asyncio.create_task(ws_send_pcm(pcm_q_ws, wsa, st), name="ws_send_pcm"),
+            asyncio.create_task(receive_stream(wsv, st), name="receive_stream"),
+            asyncio.create_task(audio_pump(st, audio_source), name="audio_pump"),
+            asyncio.create_task(video_pump(st, video_source), name="video_pump"),
         ]
-
         try:
             while True:
                 await asyncio.sleep(1)
-                
-                # Check if any task has failed
                 for task in tasks:
                     if task.done():
                         try:
                             task.result()
-                        except Exception as e:
-                            logger.error(f"Task {task.get_name()} failed: {e}")
+                        except Exception:
+                            logger.exception(f"Task {task.get_name()} died; "
+                                             "shutting down pipeline")
                             raise
         except KeyboardInterrupt:
             logger.info("Shutting down...")
