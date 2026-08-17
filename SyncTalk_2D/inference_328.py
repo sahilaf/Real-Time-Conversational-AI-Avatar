@@ -10,7 +10,8 @@ from torch.utils.data import DataLoader
 from unet_328 import Model
 from tqdm import tqdm
 from utils import (AudioEncoder, AudDataset, get_audio_features,
-                   apply_mouth_mask, read_mask_version, suppress_invented_chroma)
+                   apply_mouth_mask, read_mask_version, suppress_invented_chroma,
+                   blend_bottom_edge)
 # from unet2 import Model
 # from unet_att import Model
 
@@ -38,6 +39,9 @@ parser.add_argument('--no_chroma_fix', action='store_true',
 parser.add_argument('--no_fixed_ref', action='store_true',
                     help="Revert to the original behaviour where channels 0-2 follow the "
                          "current frame. Leaks the source mouth; use only for A/B.")
+parser.add_argument('--feather', type=int, default=16,
+                    help="Rows over which the generated crop fades back to the source at "
+                         "its bottom edge, hiding the join at the chin. 0 = hard paste.")
 args = parser.parse_args()
 
 checkpoint_path = os.path.join(".", "checkpoint", args.name)
@@ -261,6 +265,9 @@ for i in tqdm(range(audio_feats.shape[0])):
         # Compares against the real crop, so the subject's blue shirt is safe.
         pred, changed = suppress_invented_chroma(pred, crop_img_ori[4:324, 4:324])
         chroma_fixed_px.append(changed)
+    # The v2 mask reaches the bottom row, so without this the invented jaw meets
+    # untouched source at the patch edge and the join reads as a line.
+    pred = blend_bottom_edge(pred, crop_img_ori[4:324, 4:324], args.feather)
     # if args.parsing:  # Read semantic segmentation map, use ori img for [0, 0, 255] area, not pred result
         # parsing_mask = (crop_parsing_img[4:324, 4:324] == [0, 0, 255]).all(axis=2)
         # pred[parsing_mask] = img_real_ex_ori_ori[parsing_mask]

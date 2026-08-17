@@ -145,6 +145,48 @@ def suppress_invented_chroma(pred_bgr, real_bgr, threshold=0.03):
     return (np.clip(out, 0.0, 1.0) * 255.0).astype(np.uint8), float(invented.mean())
 
 
+def blend_bottom_edge(pred_bgr, real_bgr, feather=16):
+    """Ramp the generated crop back to the source along its bottom edge.
+
+    The v2 mask blanks every row from 5 down to the last one, so unlike the top
+    and sides there is no strip of unmasked pixels at the bottom for the model
+    to copy. Two things follow. The generator has to invent the whole jaw, and
+    it does that poorly - measured against the source, the bottom ten rows drift
+    about 4.9 grey levels while the unmasked top five drift 0.45, and the beard
+    comes out flattened and darker. And those invented pixels then meet
+    untouched source at the edge of the pasted patch, so the drift lands as a
+    step rather than a gradient and reads as a horizontal line across the chin.
+
+    Fading the last few rows back to the source removes the step. This is a
+    compositing choice made after the forward pass: the model's input is
+    unchanged, so the ground-truth jaw it must not see stays hidden from it.
+    Only the outermost rows are affected, well below the lips, so the generated
+    mouth shape is untouched.
+
+    Args:
+        pred_bgr: generated crop, uint8 BGR.
+        real_bgr: the same crop from the source frame, uint8 BGR, same shape.
+        feather: how many rows to ramp over. 0 restores the hard paste.
+    Returns:
+        uint8 BGR array of the same shape.
+    """
+    if pred_bgr.shape != real_bgr.shape:
+        raise ValueError(f"shape mismatch: {pred_bgr.shape} vs {real_bgr.shape}")
+    if feather <= 0:
+        return pred_bgr
+
+    h = pred_bgr.shape[0]
+    feather = min(feather, h)
+    tail = slice(h - feather, h)
+
+    # Weight 1 at the first ramped row, 0 at the last, so the join with the
+    # source below the patch is continuous.
+    ramp = np.linspace(1.0, 0.0, feather, dtype=np.float32)[:, None, None]
+    out = pred_bgr.astype(np.float32).copy()
+    out[tail] = out[tail] * ramp + real_bgr[tail].astype(np.float32) * (1.0 - ramp)
+    return np.clip(out, 0.0, 255.0).astype(np.uint8)
+
+
 def read_mask_version(checkpoint_path):
     """Mask version a checkpoint was trained with. Absent marker => legacy."""
     import json
