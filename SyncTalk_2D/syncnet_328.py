@@ -242,8 +242,11 @@ class SyncNet_color(nn.Module):
         face_embedding = self.face_encoder(face_sequences) # (B, 512, 3, 3)
         audio_embedding = self.audio_encoder(audio_sequences)
 
-        audio_embedding = audio_embedding.view(audio_embedding.size(0), -1)
-        face_embedding = face_embedding.view(face_embedding.size(0), -1)
+        # reshape, not view: under channels_last the encoder output is not
+        # contiguous and view() raises. reshape() is identical whenever view()
+        # would have worked, and copies only when it would not.
+        audio_embedding = audio_embedding.reshape(audio_embedding.size(0), -1)
+        face_embedding = face_embedding.reshape(face_embedding.size(0), -1)
 
         audio_embedding = F.normalize(audio_embedding, p=2, dim=1)
         face_embedding = F.normalize(face_embedding, p=2, dim=1)

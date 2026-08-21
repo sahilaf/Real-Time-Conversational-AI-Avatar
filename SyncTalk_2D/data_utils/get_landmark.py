@@ -1,5 +1,4 @@
 import argparse
-from os import wait3
 
 import numpy as np
 import cv2
@@ -17,6 +16,14 @@ def face_det(img, model):
     alpha_list = []
     height, width = img.shape[:2]
     bboxes, indices, kps = model.detect(img)
+
+    # Take the LARGEST detection, not simply the first. The detector runs at
+    # confThreshold=0.1, which is permissive enough to fire on background
+    # detail - on the broadcast corpus it reported 2+ faces in 80% of frames,
+    # nearly all of them station graphics and on-screen text. The real speaker
+    # is reliably the biggest box.
+    if indices is not None and len(indices) > 1:
+        indices = [max(indices, key=lambda i: float(bboxes[i, 2]) * float(bboxes[i, 3]))]
 
     for i in indices:
         x1, y1, x2, y2 = int(bboxes[i, 0]), int(bboxes[i, 1]), int(bboxes[i, 0] + bboxes[i, 2]), int(bboxes[i, 1] + bboxes[i, 3])
@@ -85,6 +92,13 @@ class Landmark:
 
         h,w = img_ori.shape[:2]
         cropped_imgs, boxes_list, center_list, alpha_list = face_det(img, self.det_net)
+        # No face in this frame. Return None rather than raising: roughly 0.2%
+        # of frames in real footage have no detectable face (blink, motion
+        # blur, a cutaway), and one of them used to abort the entire run.
+        # The caller decides what to do; frames must never be dropped, because
+        # frame index i is bound to audio time i/25.
+        if not cropped_imgs:
+            return None
         cropped = cropped_imgs[0]
         # cv2.imshow("cropped", cropped)
         h,w = cropped.shape[:2]

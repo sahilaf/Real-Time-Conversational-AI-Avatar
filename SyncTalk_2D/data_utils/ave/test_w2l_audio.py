@@ -11,7 +11,14 @@ import pickle as pkl
 import collections
 import argparse
 
-from models import AudioEncoder
+# models.py is not present in this repo - AudioEncoder lives in the root
+# utils.py, and is the same class this script expects (it loads
+# data_utils/ave/checkpoints/audio_encoder.pth, byte-identical to
+# model/checkpoints/audio_visual_encoder.pth, with the same
+# "audio_encoder." key prefixing). Python puts this file's own directory on
+# sys.path, so the repo root has to be added explicitly.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from utils import AudioEncoder
 from hparams import hparams
 import audio
 
@@ -102,7 +109,11 @@ class AudDataset(object):
 
         # window = self.all_exps[window_idxes]
 
-        mel = self.crop_audio_window(self.orig_mel.copy(), idx)
+        # No .copy() here. crop_audio_window only ever slices, never mutates,
+        # so copying the whole spectrogram per frame bought nothing and cost
+        # O(n) memcpy on every one of n frames - quadratic in video length. A
+        # 2-minute clip absorbed it; a 35-minute one copies ~2.8 TB.
+        mel = self.crop_audio_window(self.orig_mel, idx)
         # print("mel.shape: ", mel.shape)
 
         if (mel.shape[0] != syncnet_mel_step_size):
@@ -129,16 +140,17 @@ dataset = AudDataset(args.wav_path)
 save_path = args.wav_path.replace('.wav', '_ave.npy')
 data_loader = DataLoader(dataset, batch_size=64, shuffle=False)
 
+print(f"[AVE] {dataset.data_len} frames from {os.path.basename(args.wav_path)}")
 outputs = []
 with torch.no_grad():
-    for mel in data_loader:
-        # x, mel = data[i]
-        mel = mel.to(device) # .unsqueeze(0)
-        #print("mel.shape: ", mel.shape)
-        out = model(mel)
-        outputs.append(out)
+    # tqdm because a long file is otherwise a silent black box, and this stage
+    # previously failed without leaving any trace of how far it got
+    for mel in tqdm(data_loader, desc="audio features"):
+        mel = mel.to(device)
+        # .cpu() per batch: keeping every activation on a 4 GB card alongside
+        # whatever else is running is needless pressure for no speed gain
+        outputs.append(model(mel).cpu())
 outputs = torch.cat(outputs, dim=0)
-outputs = outputs.cpu()
 first_frame = outputs[0]
 last_frame = outputs[-1]
 outputs = torch.cat((first_frame.unsqueeze(0).repeat(1, 1), outputs, last_frame.unsqueeze(0).repeat(1, 1)), dim=0)

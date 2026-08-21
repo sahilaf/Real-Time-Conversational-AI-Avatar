@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avatar Playground</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/livekit-client/2.5.8/livekit-client.umd.min.js"></script>
+<style>
+:root {
+  --bg: #0a0b0d;
+  --surface: #101216;
+  --surface-2: #171a1f;
+  --surface-3: #1e2229;
+  --border: #23272f;
+  --border-strong: #333944;
+  --text: #e9ebef;
+  --text-dim: #949ba7;
+  --text-faint: #666d79;
+  --accent: #4f8ff7;
+  --accent-hover: #6da2ff;
+  --accent-soft: #4f8ff71f;
+  --success: #22c55e;
+  --success-soft: #22c55e1f;
+  --danger: #ef4444;
+  --danger-hover: #f26565;
+  --danger-soft: #ef44441f;
+  --warn: #f59e0b;
+  --warn-soft: #f59e0b1f;
+  --radius: 10px;
+  --radius-sm: 7px;
+  --shadow: 0 8px 28px rgba(0,0,0,.45);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+button:disabled { cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- header ---------- */
+.header {
+  flex: 0 0 auto;
+  height: 56px;
+  padding: 0 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: -.01em; }
+.brand-mark {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent), #9b6ff5);
+  display: grid; place-items: center; font-size: 14px;
+}
+.brand-sub { color: var(--text-faint); font-weight: 400; font-size: 12px; }
+
+.header-spacer { flex: 1; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px 5px 9px;
+  border-radius: 999px;
+  font-size: 12px; font-weight: 500;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.pill[data-state="connected"]   { color: var(--success); background: var(--success-soft); border-color: transparent; }
+.pill[data-state="connecting"],
+.pill[data-state="reconnecting"]{ color: var(--warn);    background: var(--warn-soft);    border-color: transparent; }
+.pill[data-state="connecting"] .dot,
+.pill[data-state="reconnecting"] .dot { animation: pulse 1.1s ease-in-out infinite; }
+.pill[data-state="idle"]        { color: var(--text-faint); }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+
+.btn {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 500;
+  transition: background .15s, border-color .15s, color .15s, opacity .15s;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-ghost { background: var(--surface-2); border-color: var(--border-strong); color: var(--text); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-3); }
+.btn-danger { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+.btn-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.btn:disabled { opacity: .45; }
+
+/* ---------- layout ---------- */
+.main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0,1fr) 340px 280px;
+}
+
+.panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--border); }
+.panel:first-child { border-left: none; }
+
+.panel-head {
+  flex: 0 0 auto;
+  padding: 11px 16px;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px;
+}
+.panel-head .count {
+  margin-left: auto; font-size: 11px; letter-spacing: 0;
+  text-transform: none; color: var(--text-faint);
+}
+
+/* ---------- stage ---------- */
+.stage { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; padding: 22px; position: relative; }
+
+.video-frame {
+  position: relative;
+  width: 100%; height: 100%;
+  max-width: min(100%, calc((100vh - 210px)));
+  aspect-ratio: 1 / 1;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--border);
+  display: grid; place-items: center;
+  transition: box-shadow .25s, border-color .25s;
+}
+.video-frame.speaking { border-color: #4f8ff766; box-shadow: 0 0 0 3px var(--accent-soft), 0 0 34px -6px #4f8ff755; }
+#videoSlot { width: 100%; height: 100%; display: none; }
+#videoSlot video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.video-frame.has-video #videoSlot { display: block; }
+.video-frame.has-video .placeholder { display: none; }
+
+.placeholder { text-align: center; color: var(--text-faint); padding: 24px; }
+.placeholder .icon { font-size: 34px; opacity: .5; display: block; margin-bottom: 10px; }
+.placeholder .title { color: var(--text-dim); font-weight: 500; margin-bottom: 3px; }
+.placeholder .hint { font-size: 12.5px; }
+
+.badge-live {
+  position: absolute; top: 12px; left: 12px;
+  display: none; align-items: center; gap: 6px;
+  padding: 4px 9px; border-radius: 6px;
+  background: #000000a6; backdrop-filter: blur(6px);
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  color: var(--danger);
+}
+.video-frame.has-video .badge-live { display: inline-flex; }
+.badge-live .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
+
+/* ---------- controls ---------- */
+.controls {
+  flex: 0 0 auto;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  display: flex; align-items: center; gap: 10px;
+}
+
+.mic-btn {
+  --level: 0;
+  position: relative;
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  font-size: 13px; font-weight: 500;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.mic-btn:hover:not(:disabled) { background: var(--surface-3); }
+.mic-btn::before {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit;
+  border: 1px solid var(--success);
+  opacity: calc(var(--level) * .9);
+  transform: scale(calc(1 + var(--level) * .05));
+  transition: opacity .08s linear, transform .08s linear;
+  pointer-events: none;
+}
+.mic-btn[data-muted="true"] { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+.mic-btn[data-muted="true"]::before { opacity: 0; }
+.mic-btn:disabled { opacity: .45; }
+
+.level-track {
+  flex: 1 1 auto; height: 5px; max-width: 190px;
+  border-radius: 3px; background: var(--surface-3); overflow: hidden;
+}
+.level-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--success), #86efac);
+  border-radius: 3px;
+  transition: width .07s linear;
+}
+.controls-spacer { flex: 1; }
+
+kbd {
+  font-family: var(--mono); font-size: 10.5px;
+  padding: 2px 5px; border-radius: 4px;
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+  color: var(--text-faint);
+}
+
+/* ---------- transcript ---------- */
+.transcript-body { flex: 1 1 auto; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+.msg { display: flex; flex-direction: column; gap: 5px; animation: rise .18s ease-out; }
+@keyframes rise { from { opacity: 0; transform: translateY(5px) } to { opacity: 1; transform: none } }
+.msg-who { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+.msg-body {
+  padding: 9px 12px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px solid var(--border);
+  font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere;
+}
+.msg[data-who="user"]  .msg-body { background: var(--accent-soft);  border-color: #4f8ff733; }
+.msg[data-who="agent"] .msg-body { background: var(--success-soft); border-color: #22c55e33; }
+.msg[data-final="false"] .msg-body { opacity: .62; }
+.msg[data-final="false"] .msg-body::after {
+  content: "▍"; margin-left: 1px; opacity: .7;
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0 } }
+
+.empty { margin: auto; text-align: center; color: var(--text-faint); font-size: 13px; padding: 20px; }
+.empty .icon { font-size: 26px; opacity: .4; display: block; margin-bottom: 8px; }
+
+/* ---------- sidebar ---------- */
+.side-body { flex: 1 1 auto; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.card-head {
+  padding: 9px 12px; font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint);
+  border-bottom: 1px solid var(--border); background: var(--surface-2);
+}
+.row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: 12.5px; border-top: 1px solid var(--border); }
+.row:first-of-type { border-top: none; }
+.row .k { color: var(--text-faint); flex: 0 0 auto; }
+.row .v { margin-left: auto; text-align: right; overflow-wrap: anywhere; color: var(--text); font-weight: 500; }
+.row .v.mono { font-family: var(--mono); font-size: 11.5px; }
+.row .v.dim { color: var(--text-faint); font-weight: 400; }
+
+/* ---------- modal ---------- */
+.modal {
+  position: fixed; inset: 0; z-index: 100;
+  background: #000000b8; backdrop-filter: blur(3px);
+  display: none; align-items: center; justify-content: center; padding: 20px;
+}
+.modal.open { display: flex; }
+.modal-card {
+  width: 100%; max-width: 400px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: 14px; padding: 24px; box-shadow: var(--shadow);
+  animation: rise .16s ease-out;
+}
+.modal-title { font-size: 17px; font-weight: 600; margin-bottom: 5px; }
+.modal-sub { color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 12px; font-weight: 500; color: var(--text-dim); margin-bottom: 6px; }
+.field input {
+  width: 100%; padding: 9px 11px; font-size: 13.5px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); color: var(--text);
+  transition: border-color .15s;
+}
+.field input::placeholder { color: var(--text-faint); }
+.field input:focus { outline: none; border-color: var(--accent); }
+.modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+.modal-actions .btn { flex: 1; }
+
+/* ---------- toasts ---------- */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+.toast {
+  min-width: 230px; max-width: 340px;
+  padding: 11px 13px; border-radius: var(--radius-sm);
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+  font-size: 13px; box-shadow: var(--shadow);
+  animation: rise .18s ease-out;
+  display: flex; gap: 9px; align-items: flex-start;
+}
+.toast[data-kind="error"] { border-color: #ef444455; }
+.toast[data-kind="error"] .toast-icon { color: var(--danger); }
+.toast[data-kind="ok"] .toast-icon { color: var(--success); }
+.toast-icon { flex: 0 0 auto; }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1100px) {
+  .main { grid-template-columns: minmax(0,1fr) 300px; }
+  .panel.side { display: none; }
+}
+@media (max-width: 800px) {
+  body { overflow: auto; }
+  .main { grid-template-columns: 1fr; }
+  .panel { border-left: none; border-top: 1px solid var(--border); }
+  .stage { padding: 14px; }
+  .video-frame { max-width: 100%; max-height: 52vh; }
+  .panel.transcript { min-height: 240px; }
+  .level-track { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="brand">
+    <div class="brand-mark">◆</div>
+    <div>
+      Avatar Playground
+      <div class="brand-sub">Bangla real-time avatar</div>
+    </div>
+  </div>
+  <div class="header-spacer"></div>
+  <span class="pill" id="statusPill" data-state="idle"><span class="dot"></span><span id="statusText">Disconnected</span></span>
+  <button class="btn btn-primary" id="connectBtn">Connect</button>
+  <button class="btn btn-danger" id="disconnectBtn" hidden>Disconnect</button>
+</header>
+
+<div class="main">
+  <!-- video -->
+  <section class="panel">
+    <div class="panel-head">Agent video<span class="count" id="resDisplay"></span></div>
+    <div class="stage">
+      <div class="video-frame" id="videoFrame">
+        <div id="videoSlot"></div>
+        <div class="placeholder">
+          <span class="icon">🎭</span>
+          <div class="title">No video track</div>
+          <div class="hint">Connect to start a session</div>
+        </div>
+        <span class="badge-live"><span class="dot"></span>LIVE</span>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="mic-btn" id="micBtn" data-muted="false" disabled aria-pressed="false">
+        <span id="micIcon">🎤</span><span id="micLabel">Mute</span>
+      </button>
+      <div class="level-track"><div class="level-fill" id="levelFill"></div></div>
+      <div class="controls-spacer"></div>
+      <span style="font-size:11.5px;color:var(--text-faint)">Press <kbd>M</kbd> to toggle</span>
+    </div>
+  </section>
+
+  <!-- transcript -->
+  <section class="panel transcript">
+    <div class="panel-head">Transcript<span class="count" id="msgCount"></span></div>
+    <div class="transcript-body" id="transcriptBody">
+      <div class="empty" id="transcriptEmpty">
+        <span class="icon">💬</span>
+        Conversation will appear here
+      </div>
+    </div>
+  </section>
+
+  <!-- info -->
+  <aside class="panel side">
+    <div class="panel-head">Session</div>
+    <div class="side-body">
+      <div class="card">
+        <div class="card-head">Room</div>
+        <div class="row"><span class="k">Name</span><span class="v dim" id="iRoom">—</span></div>
+        <div class="row"><span class="k">Duration</span><span class="v mono dim" id="iDuration">—</span></div>
+        <div class="row"><span class="k">Quality</span><span class="v dim" id="iQuality">—</span></div>
+      </div>
+      <div class="card">
+        <div class="card-head">Agent</div>
+        <div class="row"><span class="k">Status</span><span class="v dim" id="iAgentStatus">Not connected</span></div>
+        <div class="row"><span class="k">Identity</span><span class="v mono dim" id="iAgentId">—</span></div>
+      </div>
+      <div class="card">
+        <div class="card-head">You</div>
+        <div class="row"><span class="k">Name</span><span class="v dim" id="iUser">—</span></div>
+        <div class="row"><span class="k">Microphone</span><span class="v dim" id="iMic">Off</span></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- connect modal -->
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal-card">
+    <div class="modal-title" id="modalTitle">Join session</div>
+    <div class="modal-sub">Connect to the room your agent is running in.</div>
+    <div class="field">
+      <label for="fRoom">Room name</label>
+      <input id="fRoom" value="my-room" placeholder="my-room" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="fUser">Your name</label>
+      <input id="fUser" value="User" placeholder="Your name" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelBtn">Cancel</button>
+      <button class="btn btn-primary" id="joinBtn">Join</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div id="audioSlot" hidden></div>
+
+<script>
+"use strict";
+
+const LK = window.LivekitClient;
+
+/* ------------------------------------------------------------------ *
+ * State
+ *
+ * `phase` is the single source of truth for every control's enabled /
+ * visible state. The previous build set button.disabled inline at each
+ * call site and only restored it on the error path, so after a
+ * successful connect the modal's join button stayed disabled forever
+ * and reconnecting required a page reload. Deriving the whole UI from
+ * one function makes that class of bug structurally impossible.
+ * ------------------------------------------------------------------ */
+const S = {
+  room: null,
+  phase: "idle",            // idle | connecting | connected | reconnecting
+  micBusy: false,
+  audioCtx: null,
+  analyser: null,
+  meterSource: null,
+  meterRAF: null,
+  startedAt: 0,
+  timer: null,
+  segments: new Map(),      // segment id -> element
+};
+
+const $ = (id) => document.getElementById(id);
+const el = {
+  statusPill: $("statusPill"), statusText: $("statusText"),
+  connectBtn: $("connectBtn"), disconnectBtn: $("disconnectBtn"),
+  modal: $("modal"), joinBtn: $("joinBtn"), cancelBtn: $("cancelBtn"),
+  fRoom: $("fRoom"), fUser: $("fUser"),
+  videoFrame: $("videoFrame"), videoSlot: $("videoSlot"), audioSlot: $("audioSlot"),
+  resDisplay: $("resDisplay"),
+  micBtn: $("micBtn"), micIcon: $("micIcon"), micLabel: $("micLabel"), levelFill: $("levelFill"),
+  transcriptBody: $("transcriptBody"), transcriptEmpty: $("transcriptEmpty"), msgCount: $("msgCount"),
+  iRoom: $("iRoom"), iDuration: $("iDuration"), iQuality: $("iQuality"),
+  iAgentStatus: $("iAgentStatus"), iAgentId: $("iAgentId"),
+  iUser: $("iUser"), iMic: $("iMic"),
+  toasts: $("toasts"),
+};
+
+/* ---------------- UI helpers ---------------- */
+
+const STATUS = {
+  idle:         ["idle",         "Disconnected"],
+  connecting:   ["connecting",   "Connecting…"],
+  connected:    ["connected",    "Connected"],
+  reconnecting: ["reconnecting", "Reconnecting…"],
+};
+
+function setPhase(phase) {
+  S.phase = phase;
+  const [state, label] = STATUS[phase] || STATUS.idle;
+  el.statusPill.dataset.state = state;
+  el.statusText.textContent = label;
+
+  const live = phase === "connected" || phase === "reconnecting";
+  const busy = phase === "connecting";
+
+  el.connectBtn.hidden = live;
+  el.connectBtn.disabled = busy;
+  el.connectBtn.textContent = busy ? "Connecting…" : "Connect";
+  el.disconnectBtn.hidden = !live;
+  el.joinBtn.disabled = busy;
+  el.joinBtn.textContent = busy ? "Joining…" : "Join";
+  el.cancelBtn.disabled = busy;
+  el.micBtn.disabled = !live || S.micBusy;
+}
+
+function toast(message, kind = "info", ms = 4200) {
+  const node = document.createElement("div");
+  node.className = "toast";
+  node.dataset.kind = kind;
+  const icon = kind === "error" ? "⚠️" : kind === "ok" ? "✓" : "ℹ";
+  node.innerHTML = '<span class="toast-icon"></span><span class="toast-msg"></span>';
+  node.querySelector(".toast-icon").textContent = icon;
+  node.querySelector(".toast-msg").textContent = message;
+  el.toasts.appendChild(node);
+  setTimeout(() => node.remove(), ms);
+}
+
+function openModal() {
+  el.modal.classList.add("open");
+  setTimeout(() => el.fUser.focus(), 40);
+}
+function closeModal() { el.modal.classList.remove("open"); }
+
+function fmtDuration(ms) {
+  const s = Math.floor(ms / 1000);
+  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+
+/* ---------------- transcript ---------------- */
+
+function isAgent(p) {
+  if (!p) return false;
+  if (LK.ParticipantKind && p.kind === LK.ParticipantKind.AGENT) return true;
+  return /agent/i.test(p.identity || "");
+}
+
+function upsertSegment(seg, participant) {
+  const text = (seg.text || "").trim();
+  if (!text) return;
+
+  const agent = isAgent(participant);
+  const who = agent ? "agent" : "user";
+  const name = agent
+    ? (el.iAgentStatus.dataset.name || "Agent")
+    : (el.iUser.textContent !== "—" ? el.iUser.textContent : "You");
+
+  // Keyed by the segment id, so an interim update rewrites its own bubble
+  // and the final version replaces it. The old code appended a brand new
+  // node for finals and left every interim bubble behind as a duplicate.
+  let node = S.segments.get(seg.id);
+  if (!node) {
+    node = document.createElement("div");
+    node.className = "msg";
+    node.innerHTML = '<div class="msg-who"></div><div class="msg-body"></div>';
+    el.transcriptBody.appendChild(node);
+    S.segments.set(seg.id, node);
+  }
+  node.dataset.who = who;
+  node.dataset.final = String(!!seg.final);
+  node.querySelector(".msg-who").textContent = name;
+  node.querySelector(".msg-body").textContent = text;
+
+  el.transcriptEmpty.hidden = true;
+  el.msgCount.textContent = S.segments.size + (S.segments.size === 1 ? " line" : " lines");
+
+  const nearBottom = el.transcriptBody.scrollHeight - el.transcriptBody.scrollTop
+                     - el.transcriptBody.clientHeight < 120;
+  if (nearBottom) el.transcriptBody.scrollTop = el.transcriptBody.scrollHeight;
+}
+
+function clearTranscript() {
+  S.segments.clear();
+  [...el.transcriptBody.querySelectorAll(".msg")].forEach((n) => n.remove());
+  el.transcriptEmpty.hidden = false;
+  el.msgCount.textContent = "";
+}
+
+/* ---------------- microphone level ---------------- */
+
+function micTrack() {
+  const lp = S.room && S.room.localParticipant;
+  if (!lp) return null;
+  const src = LK.Track && LK.Track.Source ? LK.Track.Source.Microphone : "microphone";
+  const pub = lp.getTrackPublication ? lp.getTrackPublication(src) : null;
+  return (pub && pub.track) || null;
+}
+
+function stopMeter() {
+  if (S.meterRAF) cancelAnimationFrame(S.meterRAF);
+  S.meterRAF = null;
+  if (S.meterSource) { try { S.meterSource.disconnect(); } catch {} }
+  S.meterSource = null;
+  S.analyser = null;
+  setLevel(0);
+}
+
+function setLevel(v) {
+  el.levelFill.style.width = (v * 100).toFixed(1) + "%";
+  el.micBtn.style.setProperty("--level", v.toFixed(3));
+}
+
+/* Real RMS from the published mic track. The previous build filled this
+   bar with Math.random(), so it moved identically whether or not the
+   microphone was actually picking anything up. */
+function startMeter() {
+  stopMeter();
+  const track = micTrack();
+  const mst = track && track.mediaStreamTrack;
+  if (!mst) return;
+
+  try {
+    if (!S.audioCtx) S.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (S.audioCtx.state === "suspended") S.audioCtx.resume().catch(() => {});
+
+    S.meterSource = S.audioCtx.createMediaStreamSource(new MediaStream([mst]));
+    S.analyser = S.audioCtx.createAnalyser();
+    S.analyser.fftSize = 1024;
+    S.analyser.smoothingTimeConstant = 0.75;
+    S.meterSource.connect(S.analyser);
+
+    const buf = new Float32Array(S.analyser.fftSize);
+    let shown = 0;
+
+    const tick = () => {
+      if (!S.analyser) return;
+      S.analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / buf.length);
+      // muted tracks still deliver samples on some platforms; force zero
+      const target = track.isMuted ? 0 : Math.min(1, rms * 4.2);
+      shown += (target - shown) * (target > shown ? 0.55 : 0.12);
+      setLevel(shown);
+      S.meterRAF = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (err) {
+    console.warn("Mic meter unavailable:", err);
+  }
+}
+
+/* ---------------- microphone toggle ---------------- */
+
+function syncMicUI() {
+  const track = micTrack();
+  const lp = S.room && S.room.localParticipant;
+  // Trust the SDK's own state rather than a local boolean that can drift
+  // out of sync with the track whenever a call fails or the room drops.
+  const enabled = track ? !track.isMuted : !!(lp && lp.isMicrophoneEnabled);
+  const muted = !enabled;
+
+  el.micBtn.dataset.muted = String(muted);
+  el.micBtn.setAttribute("aria-pressed", String(muted));
+  el.micIcon.textContent = muted ? "🔇" : "🎤";
+  el.micLabel.textContent = muted ? "Unmute" : "Mute";
+  el.micBtn.disabled = !(S.phase === "connected" || S.phase === "reconnecting") || S.micBusy;
+  el.iMic.textContent = !S.room ? "Off" : muted ? "Muted" : "Live";
+  if (muted) setLevel(0);
+}
+
+async function toggleMic() {
+  if (!S.room || S.micBusy) return;
+  const lp = S.room.localParticipant;
+  const track = micTrack();
+  const enabled = track ? !track.isMuted : !!lp.isMicrophoneEnabled;
+
+  S.micBusy = true;
+  syncMicUI();
+  try {
+    await lp.setMicrophoneEnabled(!enabled);
+    if (!enabled) startMeter();   // re-acquire: unmuting can hand back a new track
+  } catch (err) {
+    console.error("Microphone toggle failed:", err);
+    toast("Could not change microphone: " + (err.message || err), "error");
+  } finally {
+    S.micBusy = false;
+    syncMicUI();
+  }
+}
+
+/* ---------------- media tracks ---------------- */
+
+function attachTrack(track) {
+  if (track.kind === "video") {
+    const node = track.attach();
+    node.autoplay = true;
+    node.playsInline = true;
+    node.muted = true;            // audio arrives on its own track
+    // Replace the slot's children instead of the old replaceWith() on a
+    // cached node: detach() pulls that node out of the DOM on disconnect,
+    // so on the next connect replaceWith() silently did nothing and the
+    // video never came back.
+    el.videoSlot.replaceChildren(node);
+    el.videoFrame.classList.add("has-video");
+    node.play().catch(() => {});
+    node.addEventListener("loadedmetadata", () => {
+      el.resDisplay.textContent = node.videoWidth + "×" + node.videoHeight;
+    });
+  } else if (track.kind === "audio") {
+    const node = track.attach();
+    node.autoplay = true;
+    el.audioSlot.appendChild(node);
+    node.play().catch(() => {
+      toast("Click anywhere to enable audio playback", "info", 6000);
+      const unlock = () => { node.play().catch(() => {}); };
+      document.addEventListener("click", unlock, { once: true });
+    });
+  }
+}
+
+function detachTrack(track) {
+  try { track.detach().forEach((n) => n.remove()); } catch {}
+  if (track.kind === "video") {
+    el.videoFrame.classList.remove("has-video");
+    el.videoSlot.replaceChildren();
+    el.resDisplay.textContent = "";
+  }
+}
+
+function noteAgent(p) {
+  if (!isAgent(p)) return;
+  const name = p.name || "AI Agent";
+  el.iAgentStatus.textContent = name;
+  el.iAgentStatus.dataset.name = name;
+  el.iAgentStatus.classList.remove("dim");
+  el.iAgentId.textContent = p.identity;
+}
+
+/* ---------------- connect / disconnect ---------------- */
+
+async function fetchToken(room, user) {
+  const res = await fetch("/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ room_name: room, participant_name: user }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("Token request failed (" + res.status + ")"));
+  if (!data.token || !data.url) throw new Error("Token response was incomplete");
+  return data;
+}
+
+function wireRoom(room) {
+  const E = LK.RoomEvent;
+  room.on(E.TrackSubscribed, (track) => attachTrack(track));
+  room.on(E.TrackUnsubscribed, (track) => detachTrack(track));
+  room.on(E.ParticipantConnected, (p) => noteAgent(p));
+  room.on(E.ParticipantDisconnected, (p) => {
+    if (!isAgent(p)) return;
+    el.iAgentStatus.textContent = "Not connected";
+    el.iAgentStatus.classList.add("dim");
+    delete el.iAgentStatus.dataset.name;
+    el.iAgentId.textContent = "—";
+  });
+  room.on(E.TranscriptionReceived, (segments, participant) => {
+    (segments || []).forEach((seg) => upsertSegment(seg, participant));
+  });
+  room.on(E.LocalTrackPublished, (pub) => {
+    if (pub.kind === "audio") { startMeter(); syncMicUI(); }
+  });
+  room.on(E.TrackMuted, () => syncMicUI());
+  room.on(E.TrackUnmuted, () => syncMicUI());
+  room.on(E.Reconnecting, () => setPhase("reconnecting"));
+  room.on(E.Reconnected, () => { setPhase("connected"); syncMicUI(); });
+  room.on(E.ConnectionQualityChanged, (quality, p) => {
+    if (p && p.isLocal) el.iQuality.textContent = String(quality || "—");
+  });
+  room.on(E.Disconnected, (reason) => {
+    if (reason !== undefined && S.phase !== "idle") {
+      toast("Disconnected from room", "info");
+    }
+    teardown();
+  });
+}
+
+async function connect() {
+  if (S.phase === "connecting" || S.phase === "connected") return;
+
+  const roomName = el.fRoom.value.trim();
+  const userName = el.fUser.value.trim();
+  if (!roomName || !userName) { toast("Room name and your name are both required", "error"); return; }
+
+  setPhase("connecting");
+  try {
+    const { token, url } = await fetchToken(roomName, userName);
+
+    const room = new LK.Room({ adaptiveStream: true, dynacast: true });
+    S.room = room;
+    wireRoom(room);
+
+    await room.connect(url, token);
+
+    // Participants already in the room never fire ParticipantConnected,
+    // which is the normal case when reconnecting to a running agent.
+    room.remoteParticipants.forEach((p) => {
+      noteAgent(p);
+      p.trackPublications.forEach((pub) => { if (pub.track) attachTrack(pub.track); });
+    });
+
+    try {
+      await room.localParticipant.setMicrophoneEnabled(true);
+    } catch (err) {
+      toast("Microphone unavailable: " + (err.message || err), "error", 6000);
+    }
+
+    S.startedAt = Date.now();
+    S.timer = setInterval(() => {
+      el.iDuration.textContent = fmtDuration(Date.now() - S.startedAt);
+    }, 1000);
+
+    el.iRoom.textContent = roomName;
+    el.iRoom.classList.remove("dim");
+    el.iUser.textContent = userName;
+    el.iUser.classList.remove("dim");
+
+    setPhase("connected");
+    startMeter();
+    syncMicUI();
+    closeModal();
+    toast("Connected to " + roomName, "ok", 2600);
+  } catch (err) {
+    console.error("Connection failed:", err);
+    toast(err.message || "Connection failed", "error", 6000);
+    // Full teardown so a retry starts from a clean slate.
+    if (S.room) { try { await S.room.disconnect(); } catch {} }
+    teardown();
+  }
+}
+
+async function disconnect() {
+  const room = S.room;
+  if (!room) { teardown(); return; }
+  try { await room.disconnect(); } catch (err) { console.warn("Disconnect error:", err); }
+  teardown();
+}
+
+/* Restores every piece of connection state. Anything created in connect()
+   must be released here, or the next connect inherits it. */
+function teardown() {
+  if (S.timer) clearInterval(S.timer);
+  S.timer = null;
+  stopMeter();
+
+  if (S.room) { try { S.room.removeAllListeners(); } catch {} }
+  S.room = null;
+  S.micBusy = false;
+
+  el.videoSlot.replaceChildren();
+  el.audioSlot.replaceChildren();
+  el.videoFrame.classList.remove("has-video", "speaking");
+  el.resDisplay.textContent = "";
+
+  el.iRoom.textContent = "—";        el.iRoom.classList.add("dim");
+  el.iUser.textContent = "—";        el.iUser.classList.add("dim");
+  el.iDuration.textContent = "—";
+  el.iQuality.textContent = "—";
+  el.iAgentStatus.textContent = "Not connected";
+  el.iAgentStatus.classList.add("dim");
+  delete el.iAgentStatus.dataset.name;
+  el.iAgentId.textContent = "—";
+
+  clearTranscript();
+  setPhase("idle");
+  syncMicUI();
+}
+
+/* ---------------- events ---------------- */
+
+el.connectBtn.addEventListener("click", openModal);
+el.cancelBtn.addEventListener("click", closeModal);
+el.joinBtn.addEventListener("click", connect);
+el.disconnectBtn.addEventListener("click", disconnect);
+el.micBtn.addEventListener("click", toggleMic);
+
+el.modal.addEventListener("click", (e) => { if (e.target === el.modal) closeModal(); });
+[el.fRoom, el.fUser].forEach((input) =>
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); }));
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && el.modal.classList.contains("open")) { closeModal(); return; }
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if (!typing && (e.key === "m" || e.key === "M") && S.room) { e.preventDefault(); toggleMic(); }
+});
+
+window.addEventListener("beforeunload", () => { if (S.room) S.room.disconnect(); });
+
+setPhase("idle");
+syncMicUI();
+</script>
+</body>
+</html>

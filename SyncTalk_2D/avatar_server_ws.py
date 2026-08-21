@@ -45,6 +45,15 @@ from utils import (AudioEncoder, AudDataset, get_audio_features as _get_audio_fe
                    melspectrogram)
 
 
+def log(*args):
+    """Timestamped, unbuffered server log.
+
+    The agent logs wall-clock times too; without stamps here the two streams
+    cannot be lined up, which is what made the first latency hunt guesswork.
+    """
+    print(f"[{time.strftime('%H:%M:%S')}]", *args, flush=True)
+
+
 # -----------------------------
 # App / globals (models)
 # -----------------------------
@@ -123,6 +132,7 @@ MASK_VERSION = "legacy"
 # invented jaw straight against untouched source. 0 restores the hard paste.
 FEATHER_ROWS = 16
 fixed_ref_tensor: Optional[torch.Tensor] = None   # [3,320,320], set at startup
+fixed_ref_index: Optional[int] = None             # which source frame it came from
 
 # End-of-batch marker in the frame_index header field (also carries the PCM).
 END_MARKER = 0xFFFFFFFF
@@ -526,7 +536,7 @@ def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
 
     mode = asr_mode
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[SyncTalk] Using device: {device}")
+    log(f"[SyncTalk] Using device: {device}")
 
     # Input shapes never change, so let cuDNN pick the fastest kernels once.
     torch.backends.cudnn.benchmark = True
@@ -535,15 +545,15 @@ def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
     # as real pixels, and the generator's output there disagrees with the rest
     # of the crop - a rectangle outlining the mask appears on every frame.
     MASK_VERSION = read_mask_version(checkpoint_path)
-    print(f"[SyncTalk] Mouth mask: {MASK_VERSION}")
+    log(f"[SyncTalk] Mouth mask: {MASK_VERSION}")
 
-    print("[SyncTalk] Loading audio encoder...")
+    log("[SyncTalk] Loading audio encoder...")
     ae = AudioEncoder().to(device).eval()
     ckpt_path = os.path.join(".", "model", "checkpoints", "audio_visual_encoder.pth")
     ckpt = torch.load(ckpt_path, map_location=device)
     ae.load_state_dict({f"audio_encoder.{k}": v for k, v in ckpt.items()})
 
-    print(f"[SyncTalk] Loading SyncTalk model from {checkpoint_path}...")
+    log(f"[SyncTalk] Loading SyncTalk model from {checkpoint_path}...")
     m = Model(6, mode).to(device)
     m.load_state_dict(torch.load(checkpoint_path, map_location=device))
     m.eval()
@@ -557,14 +567,25 @@ def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
     if not os.path.isdir(lms_dir):
         raise RuntimeError(f"landmarks not found: {lms_dir}")
 
-    jpgs = [f for f in os.listdir(img_dir) if f.endswith(".jpg")]
-    if len(jpgs) < 2:
-        raise RuntimeError(f"Not enough .jpg frames in {img_dir}")
-    len_img = len(jpgs)
+    # Count landmarks, not images. The closed-mouth scan in
+    # initialize_idle_inputs walks range(len_img) reading .lms files, while
+    # images are only ever read for the frames that scan selects. Deriving the
+    # count from landmarks therefore lets a deployment ship all landmarks
+    # (a few MB) with only the images it will actually use, instead of the
+    # whole 1.3 GB of source frames.
+    lms_files = [f for f in os.listdir(lms_dir) if f.endswith(".lms")]
+    if len(lms_files) < 2:
+        raise RuntimeError(f"Not enough .lms landmarks in {lms_dir}")
+    len_img = len(lms_files)
 
-    exm = cv2.imread(os.path.join(img_dir, "0.jpg"))
+    jpgs = sorted((f for f in os.listdir(img_dir) if f.endswith(".jpg")),
+                  key=lambda f: int(os.path.splitext(f)[0]))
+    if not jpgs:
+        raise RuntimeError(f"No .jpg frames in {img_dir}")
+
+    exm = cv2.imread(os.path.join(img_dir, jpgs[0]))
     if exm is None:
-        raise RuntimeError("Could not read 0.jpg")
+        raise RuntimeError(f"Could not read {jpgs[0]}")
     img_h, img_w = exm.shape[:2]
 
     # Output resolution: everything internal stays native; only the final
@@ -573,7 +594,7 @@ def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
     if OUT_SIZE > 0 and max(img_h, img_w) > OUT_SIZE:
         scale = OUT_SIZE / max(img_h, img_w)
         img_w, img_h = int(round(img_w * scale)), int(round(img_h * scale))
-        print(f"[SyncTalk] Output scaled to {img_w}x{img_h} (native {exm.shape[1]}x{exm.shape[0]})")
+        log(f"[SyncTalk] Output scaled to {img_w}x{img_h} (native {exm.shape[1]}x{exm.shape[0]})")
 
     # Until initialize_idle_inputs finds the closed-mouth run, the walk may use
     # any frame.
@@ -583,7 +604,8 @@ def initialize_models(checkpoint_path: str, dataset_path: str, asr_mode: str):
     audio_encoder = ae
     synctalk_model = m
 
-    print(f"[SyncTalk] ✅ Ready. Image: {img_w}x{img_h} frames_available={len_img} mode={mode}")
+    log(f"[SyncTalk] ✅ Ready. Image: {img_w}x{img_h} landmarks={len_img} "
+          f"images={len(jpgs)} mode={mode}")
 
     initialize_idle_inputs()
 
@@ -619,11 +641,11 @@ def initialize_idle_inputs():
         if not os.path.exists(sil_path):
             sf.write(sil_path, np.zeros(16000 * 2, dtype=np.float32), 16000)
         silence_feats = _process_audio_to_features(sil_path)
-        print(f"[Idle] Encoded true silence: {silence_feats.shape} "
+        log(f"[Idle] Encoded true silence: {silence_feats.shape} "
               f"mean={silence_feats.mean():+.4f} (zeros would be 0.0000)")
     except Exception as e:
         silence_feats = None
-        print(f"[Idle] WARNING: could not encode silence ({e}); falling back to zeros. "
+        log(f"[Idle] WARNING: could not encode silence ({e}); falling back to zeros. "
               "Idle mouth may look wrong.")
 
     # --- 2. find a CONTIGUOUS run of closed-mouth frames -------------------
@@ -641,7 +663,7 @@ def initialize_idle_inputs():
     valid = ~np.isnan(ap)
     if not valid.any():
         idle_ref_indices = list(range(min(len_img, 100)))
-        print("[Idle] WARNING: no landmarks readable; idle will use the first frames.")
+        log("[Idle] WARNING: no landmarks readable; idle will use the first frames.")
         return
 
     def longest_run(mask):
@@ -667,7 +689,7 @@ def initialize_idle_inputs():
     n_idle = int(IDLE_DURATION_SECONDS * IDLE_FPS)
     needed = n_idle if IDLE_USE_RAW_FRAMES else n_idle // 2 + 2
     v = ap[valid]
-    print(f"[Idle] Mouth aperture across {int(valid.sum())} frames: "
+    log(f"[Idle] Mouth aperture across {int(valid.sum())} frames: "
           f"min={v.min():.1f} median={float(np.median(v)):.1f} max={v.max():.1f}")
 
     chosen = None
@@ -683,14 +705,14 @@ def initialize_idle_inputs():
         thr = float(np.percentile(v, 60))
         start, length = longest_run(valid & (ap <= thr))
         chosen = (start, max(length, 1), thr, 60)
-        print("[Idle] WARNING: no long closed-mouth run found; using the best available.")
+        log("[Idle] WARNING: no long closed-mouth run found; using the best available.")
 
     start, length, thr, q = chosen
     idle_ref_indices = list(range(start, start + length))
     seg = ap[start:start + length]
-    print(f"[Idle] Idle reference run: frames {start}..{start + length - 1} "
+    log(f"[Idle] Idle reference run: frames {start}..{start + length - 1} "
           f"({length} frames, {length / IDLE_FPS:.1f}s) at <={thr:.1f} ({q}th pct)")
-    print(f"[Idle] Aperture in run: mean={np.nanmean(seg):.2f} max={np.nanmax(seg):.2f} "
+    log(f"[Idle] Aperture in run: mean={np.nanmean(seg):.2f} max={np.nanmax(seg):.2f} "
           f"(video median {float(np.median(v)):.1f})")
 
     # Speech base frames come from the same run: idle plays this footage, so
@@ -699,7 +721,7 @@ def initialize_idle_inputs():
     global speech_window
     if length >= 25:
         speech_window = list(idle_ref_indices)
-        print(f"[Walk] Speech base frames constrained to the idle run "
+        log(f"[Walk] Speech base frames constrained to the idle run "
               f"({len(speech_window)} frames)")
 
     # --- 3. build the fixed reference frame for channels 0-2 ---------------
@@ -707,16 +729,16 @@ def initialize_idle_inputs():
         try:
             quietest = int(np.nanargmin(np.where(valid, ap, np.nan)))
             _set_fixed_reference(quietest)
-            print(f"[Ref] Fixed reference frame = {quietest} (aperture {ap[quietest]:.2f}). "
+            log(f"[Ref] Fixed reference frame = {quietest} (aperture {ap[quietest]:.2f}). "
                   "Channels 0-2 no longer track the current frame.")
         except Exception as e:
-            print(f"[Ref] WARNING: could not build fixed reference ({e}); "
+            log(f"[Ref] WARNING: could not build fixed reference ({e}); "
                   "falling back to per-frame reference (mouth may move on silence).")
 
 
 def _set_fixed_reference(frame_idx: int):
     """Cache one closed-mouth frame as the appearance reference (channels 0-2)."""
-    global fixed_ref_tensor
+    global fixed_ref_tensor, fixed_ref_index
 
     img = cv2.imread(os.path.join(img_dir, f"{frame_idx}.jpg"))
     if img is None:
@@ -845,7 +867,7 @@ def initialize_idle_cache():
                 meta.get("mode") == mode and
                 meta.get("version") == IDLE_CACHE_VERSION):
                 
-                print(f"[IdleCache] Loading {num_frames} cached idle frames...")
+                log(f"[IdleCache] Loading {num_frames} cached idle frames...")
                 with open(cache_file, "rb") as f:
                     frames = pickle.load(f)
                 
@@ -855,13 +877,13 @@ def initialize_idle_cache():
                     img_w=img_w,
                     img_h=img_h
                 )
-                print(f"[IdleCache] ✅ Loaded {len(frames)} idle frames from cache")
+                log(f"[IdleCache] ✅ Loaded {len(frames)} idle frames from cache")
                 return
         except Exception as e:
-            print(f"[IdleCache] Cache invalid or corrupted: {e}")
+            log(f"[IdleCache] Cache invalid or corrupted: {e}")
     
     # Generate new idle frames
-    print(f"[IdleCache] Generating {num_frames} idle frames ({IDLE_DURATION_SECONDS}s at {IDLE_FPS}fps)...")
+    log(f"[IdleCache] Generating {num_frames} idle frames ({IDLE_DURATION_SECONDS}s at {IDLE_FPS}fps)...")
     
     os.makedirs(cache_dir, exist_ok=True)
     
@@ -884,10 +906,10 @@ def initialize_idle_cache():
                 raise RuntimeError(
                     f"Idle frame generation failed on the first frame: {e}"
                 ) from e
-            print(f"[IdleCache] Error generating frame {i}: {e}")
+            log(f"[IdleCache] Error generating frame {i}: {e}")
 
         if (i + 1) % 25 == 0:
-            print(f"[IdleCache] Generated {i + 1}/{num_frames} frames...")
+            log(f"[IdleCache] Generated {i + 1}/{num_frames} frames...")
     
     # Save to cache
     with open(cache_file, "wb") as f:
@@ -913,7 +935,7 @@ def initialize_idle_cache():
         img_h=img_h
     )
     
-    print(f"[IdleCache] ✅ Generated and cached {len(frames)} idle frames")
+    log(f"[IdleCache] ✅ Generated and cached {len(frames)} idle frames")
 
 
 # -----------------------------
@@ -951,6 +973,7 @@ async def session_worker(sess: SessionState, fps: int = 25):
                                    # batch, so shorter batches = smoother flow
     CATCHUP_BEHIND = 10            # frames behind real time before skipping
     CLIENT_GATE_S = 0.30           # client's prebuffer, used to anchor "behind"
+    EMIT_CHUNK = 12                # frames rendered before yielding to the loop
 
     extractor = StreamingFeatureExtractor()
     sent = 0                                   # frames emitted this utterance
@@ -1015,7 +1038,7 @@ async def session_worker(sess: SessionState, fps: int = 25):
         sent = 0
         utt_anchor = None
 
-    print(f"[Session {sess.sid}] Worker started (streaming, segment={SEGMENT_S}s, "
+    log(f"[Session {sess.sid}] Worker started (streaming, segment={SEGMENT_S}s, "
           f"window={len(speech_window)}f)")
 
     try:
@@ -1031,7 +1054,11 @@ async def session_worker(sess: SessionState, fps: int = 25):
                             q.get_nowait()
                         except asyncio.QueueEmpty:
                             break
-                print(f"[Session {sess.sid}] Reset: queues cleared")
+                # Queued after the flush, so it is the first thing the client
+                # receives on the clean stream: everything before it belongs to
+                # the interrupted turn and can be discarded without guessing.
+                await sess.frame_q.put(json.dumps({"type": "reset_done"}))
+                log(f"[Session {sess.sid}] Reset: queues cleared")
 
             # ---- 1. drain incoming audio --------------------------------
             flush_now = False
@@ -1065,7 +1092,7 @@ async def session_worker(sess: SessionState, fps: int = 25):
                             batch_t0 = time.monotonic()
                         sess.last_audio_time = time.time()
                     except Exception as e:
-                        print(f"[Session {sess.sid}] Bad WAV chunk: {e}")
+                        log(f"[Session {sess.sid}] Bad WAV chunk: {e}")
                 if stop:
                     break
             except asyncio.TimeoutError:
@@ -1080,20 +1107,31 @@ async def session_worker(sess: SessionState, fps: int = 25):
                 await asyncio.to_thread(extractor.extract)
 
             # ---- 3. emit what has enough context ------------------------
+            # Gemini streams far faster than real time, so a whole answer can
+            # be waiting at once. Emitting it in one call rendered hundreds of
+            # frames without returning here, the audio queue climbed past 200
+            # chunks, and neither a flush nor a reset could be seen until the
+            # batch finished. EMIT_CHUNK bounds one pass; the loop comes
+            # straight back for the rest.
             if flush_now:
                 await asyncio.to_thread(extractor.finalize)
                 if extractor.n_raw > 0:
                     feats = extractor.features_for_emit(final=True)
                     target = max(sent, max(1, -(-len(extractor.pcm24) // SPF)))
-                    await emit(target - sent, feats)
-                    end_idx = speech_window[sess.img_idx] if speech_window else 0
-                    await sess.frame_q.put(json.dumps({
-                        "type": "utterance_end",
-                        "frames": sent,
-                        "end_source_idx": int(end_idx),
-                    }))
-                    print(f"[Session {sess.sid}] Utterance done: {sent} frames, "
-                          f"{len(extractor.pcm24) / SR:.2f}s audio, walk at {end_idx}")
+                    while sent < target and not sess.reset_requested:
+                        await emit(min(EMIT_CHUNK, target - sent), feats)
+                # utterance_end goes out for EVERY flush, including one that
+                # carried too little audio to yield a feature frame. The client
+                # turns it into the playback-completion report LiveKit waits
+                # on; skipping it leaves that speech unacknowledged forever.
+                end_idx = speech_window[sess.img_idx] if speech_window else 0
+                await sess.frame_q.put(json.dumps({
+                    "type": "utterance_end",
+                    "frames": sent,
+                    "end_source_idx": int(end_idx),
+                }))
+                log(f"[Session {sess.sid}] Utterance done: {sent} frames, "
+                    f"{len(extractor.pcm24) / SR:.2f}s audio, walk at {end_idx}")
                 reset_utterance()
             elif extractor.n_raw > 0:
                 # Frame fi's feature window reaches raw[fi+6], so emitting at
@@ -1103,14 +1141,15 @@ async def session_worker(sess: SessionState, fps: int = 25):
                 n_avail = min(extractor.n_audio_frames,
                               extractor.n_raw - 7) - sent
                 if n_avail > 0:
-                    await emit(n_avail, extractor.features_for_emit(final=False))
+                    await emit(min(n_avail, EMIT_CHUNK),
+                               extractor.features_for_emit(final=False))
 
     except Exception as e:
-        print(f"[Session {sess.sid}] Worker fatal error: {e}")
+        log(f"[Session {sess.sid}] Worker fatal error: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        print(f"[Session {sess.sid}] Worker stopped. Total frames: {sess.frames_generated}")
+        log(f"[Session {sess.sid}] Worker stopped. Total frames: {sess.frames_generated}")
 
 
 # -----------------------------
@@ -1182,7 +1221,7 @@ async def create_session():
     )
     sessions[sid] = sess
     asyncio.create_task(session_worker(sess))
-    print(f"[Session {sid}] Created")
+    log(f"[Session {sid}] Created")
     return {"session_id": sid, "idle_cache_ready": idle_cache is not None}
 
 
@@ -1194,12 +1233,12 @@ async def ws_audio(ws: WebSocket, sid: str):
     await ws.accept()
     sess = sessions.get(sid)
     if not sess:
-        print(f"[WS Audio] Session {sid} not found")
+        log(f"[WS Audio] Session {sid} not found")
         await ws.close(code=1008)
         return
 
     sess.audio_connected = True
-    print(f"[Session {sid}] Audio WebSocket connected")
+    log(f"[Session {sid}] Audio WebSocket connected")
     chunk_count = 0
 
     try:
@@ -1220,7 +1259,7 @@ async def ws_audio(ws: WebSocket, sid: str):
                     # Client reports where its idle loop is so speech starts
                     # from the same footage.
                     _align_walk(sess, int(js.get("source_idx", 0)))
-                    print(f"[Session {sid}] Walk aligned to source {js.get('source_idx')}")
+                    log(f"[Session {sid}] Walk aligned to source {js.get('source_idx')}")
                 elif kind == "reset":
                     sess.reset_requested = True
                 continue
@@ -1235,16 +1274,16 @@ async def ws_audio(ws: WebSocket, sid: str):
             await sess.audio_q.put(data)
 
             if chunk_count % 50 == 0:
-                print(f"[Session {sid}] Received {chunk_count} audio chunks, queue size: {sess.audio_q.qsize()}")
+                log(f"[Session {sid}] Received {chunk_count} audio chunks, queue size: {sess.audio_q.qsize()}")
 
     except WebSocketDisconnect:
-        print(f"[Session {sid}] Audio WebSocket disconnected after {chunk_count} chunks")
+        log(f"[Session {sid}] Audio WebSocket disconnected after {chunk_count} chunks")
     except Exception as e:
-        print(f"[Session {sid}] Audio WebSocket error: {e}")
+        log(f"[Session {sid}] Audio WebSocket error: {e}")
     finally:
         sess.audio_connected = False
         if sess and not sess.video_connected:
-            print(f"[Session {sid}] All WS disconnected, stopping worker")
+            log(f"[Session {sid}] All WS disconnected, stopping worker")
             sess.closed.set()
 
 
@@ -1260,12 +1299,12 @@ async def ws_video(ws: WebSocket, sid: str):
     await ws.accept()
     sess = sessions.get(sid)
     if not sess:
-        print(f"[WS Video] Session {sid} not found")
+        log(f"[WS Video] Session {sid} not found")
         await ws.close(code=1008)
         return
 
     sess.video_connected = True
-    print(f"[Session {sid}] Video WebSocket connected (segment protocol)")
+    log(f"[Session {sid}] Video WebSocket connected (segment protocol)")
     packet_count = 0
     segment_count = 0
     start_time = time.time()
@@ -1303,19 +1342,19 @@ async def ws_video(ws: WebSocket, sid: str):
             if now - last_log_time >= 2.0:
                 elapsed_total = now - start_time
                 mbps = (bytes_sent * 8 / 1_000_000) / elapsed_total if elapsed_total > 0 else 0
-                print(f"[Session {sid}] Sent {packet_count} packets ({segment_count} segments), {mbps:.2f} Mbps, queue: {sess.frame_q.qsize()}")
+                log(f"[Session {sid}] Sent {packet_count} packets ({segment_count} segments), {mbps:.2f} Mbps, queue: {sess.frame_q.qsize()}")
                 last_log_time = now
                 
     except WebSocketDisconnect:
-        print(f"[Session {sid}] Video WebSocket disconnected after {packet_count} packets ({segment_count} segments)")
+        log(f"[Session {sid}] Video WebSocket disconnected after {packet_count} packets ({segment_count} segments)")
     except Exception as e:
-        print(f"[Session {sid}] Video WebSocket error: {e}")
+        log(f"[Session {sid}] Video WebSocket error: {e}")
     finally:
         sess.video_connected = False
         if sess and not sess.audio_connected:
-             print(f"[Session {sid}] All WS disconnected, stopping worker")
+             log(f"[Session {sid}] All WS disconnected, stopping worker")
              sess.closed.set()
-        print(f"[Session {sid}] Video WS closed. Total: {packet_count} packets, {segment_count} segments, {bytes_sent / 1_000_000:.2f} MB")
+        log(f"[Session {sid}] Video WS closed. Total: {packet_count} packets, {segment_count} segments, {bytes_sent / 1_000_000:.2f} MB")
 
 
 # -----------------------------

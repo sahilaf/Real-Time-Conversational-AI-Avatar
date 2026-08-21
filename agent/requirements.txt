@@ -1,6 +1,18 @@
-livekit-agents>=0.9.0
-livekit-plugins-google>=0.7.0
+# livekit-agents 1.6.x calls RealtimeModel.session(turn_detection_disabled=...),
+# which older plugin builds do not accept - keep agents and plugins on the same
+# minor version or the agent crashes on session start.
+livekit-agents>=1.6.10
+livekit-plugins-google>=1.6.10
+
+# Local turn detection. Gemini's server VAD marked 1s utterances as speech for
+# 8-11s and the delay compounded across turns; Silero commits in ~2s and stays
+# flat. Set LOCAL_VAD=0 to fall back.
+livekit-plugins-silero>=1.6.10
+
 python-dotenv>=1.0.0
 aiohttp>=3.9.0
+requests>=2.31.0
+websockets>=12.0
+soundfile>=0.12.1
 opencv-python>=4.8.0
 numpy>=1.24.0

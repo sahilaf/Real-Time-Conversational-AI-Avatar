@@ -36,6 +36,55 @@ This project is a **Final Year Design Project (FYDP)** that creates a full real-
 
 ---
 
+## ⚡ Run It
+
+Three terminals, in this order. (First-time setup is in [Getting Started](#-getting-started).)
+
+**1 — Avatar server** (conda env, needs the GPU):
+
+```bash
+cd SyncTalk_2D && conda activate synctalk && python avatar_server_ws.py --checkpoint checkpoint/final_v2/59.pth --dataset dataset/redwan --mode ave --port 5001
+```
+
+**2 — Agent** (venv):
+
+```bash
+cd agent && .\venv\Scripts\activate && python agent_bangla.py dev
+```
+
+**3 — Frontend** (venv):
+
+```bash
+cd frontend && .\venv\Scripts\activate && python main.py
+```
+
+Then open **http://localhost:5000** and click **Connect**.
+
+### Offline inference (no agent, no frontend)
+
+Generate a video from a WAV file — the quickest way to check the model itself:
+
+```bash
+cd SyncTalk_2D && conda activate synctalk && python inference_328.py --name final_v2 --audio_path demo/talk_hb.wav --asr ave
+```
+
+Output lands in `SyncTalk_2D/result/`. Audio must be mono WAV; convert with
+`ffmpeg -i input.mp3 -ar 16000 -ac 1 demo/my_audio.wav`.
+
+### Measured latency
+
+| stage | time |
+|---|---:|
+| your speech → turn committed (local VAD) | ~1.6–2.0 s |
+| Gemini generation | ~0.5 s |
+| avatar pipeline (audio in → lips moving) | ~1.0 s |
+| **you stop talking → avatar answers** | **~1.5–2 s** |
+
+The agent prints these live as `⏱` lines. Generation stays flat across a long
+conversation — see [Gemini model](#gemini-model) for why the model choice matters.
+
+---
+
 ## 📂 Project Structure
 
 ```
@@ -224,12 +273,13 @@ pip install fastapi uvicorn websockets
 **Start the avatar server:**
 
 ```bash
-python avatar_server_ws.py \
-  --checkpoint checkpoint/<name>/4.pth \
-  --dataset dataset/<name> \
-  --mode ave \
-  --port 5001
+python avatar_server_ws.py --checkpoint checkpoint/<name>/59.pth --dataset dataset/<name> --mode ave --port 5001
 ```
+
+The `--checkpoint` argument takes a **`.pth` file**, not a directory. Keep
+`train_config.json` beside the weights — the server reads the mouth-mask version from
+it and prints `[SyncTalk] Mouth mask: ...` at startup. Without that file it silently
+falls back to the legacy mask, which draws a visible rectangle on every frame.
 
 ### Step 3: Set Up the Agent (AI Backend)
 
@@ -323,19 +373,62 @@ Open your browser at `http://localhost:5000` → Click **Connect** → Start tal
 | `ASSISTANT_SR` | Audio sample rate | `24000` |
 | `VIDEO_TRACK_NAME` | Published video track name | `agent_video` |
 | `AUDIO_TRACK_NAME` | Published audio track name | `agent_audio` |
+| `GEMINI_REALTIME_MODEL` | Gemini Live model | `gemini-3.1-flash-live-preview` |
+| `LOCAL_VAD` | Local Silero turn detection (`0` = Gemini's) | `1` |
+| `VAD_MIN_SILENCE` | Silence before a turn ends, seconds | `0.55` |
+| `VAD_ACTIVATION` | Silero speech threshold (lower = more sensitive) | `0.5` |
+| `VIDEO_MAX_BITRATE` | Avatar video upload cap, bps | `800000` |
+| `INPUT_SAMPLE_RATE` | Mic rate delivered to Gemini | `16000` |
 
-### Gemini Model Settings
+**Diagnostics** — used to find the latency issues above; leave off for normal runs:
 
-Customize the AI voice and behavior in the agent file:
+| Variable | Effect |
+|----------|--------|
+| `DISABLE_VIDEO=1` | Don't publish the avatar video track |
+| `DISABLE_AVATAR=1` | Bypass SyncTalk entirely; session publishes its own audio |
+| `DISABLE_MIC_MONITOR=1` | Stop the independent mic-level probe |
+| `VAD_TUNE=1` | Send an explicit VAD config to Gemini (off — has broken responses before) |
+
+Bisecting with these is how the cause was isolated: `DISABLE_VIDEO=1 DISABLE_AVATAR=1`
+gives a plain Gemini agent for comparison. In PowerShell, set them with
+`$env:DISABLE_VIDEO='1'` — and clear them afterwards, they persist for the session.
+
+### Gemini Model
+
+Default: **`gemini-3.1-flash-live-preview`**, overridable with `GEMINI_REALTIME_MODEL`.
+
+> ⚠️ **Do not switch to the `gemini-2.5-flash-native-audio-*` family.** Its
+> server-side session processing degrades as audio context accumulates: reply
+> latency was measured growing **8 s → 66 s over five turns**, reproducible in a
+> bare agent with none of this pipeline attached, with a flat client send queue
+> proving the audio had already reached Google. On the live-cascade model the
+> same conversation measures a constant **0.5 s** generation per turn.
+
+To list the models your key can actually use with the Live API:
+
+```bash
+cd agent && .\venv\Scripts\activate && python -c "from dotenv import load_dotenv; load_dotenv(); import os; from google import genai; [print(m.name) for m in genai.Client(api_key=os.environ['GOOGLE_API_KEY']).models.list() if 'bidiGenerateContent' in (getattr(m,'supported_actions',None) or [])]"
+```
+
+Voice and behaviour are set in the agent file:
 
 ```python
 model = google.realtime.RealtimeModel(
-    model="gemini-2.5-flash-native-audio-preview-12-2025",
+    model=GEMINI_MODEL,     # env: GEMINI_REALTIME_MODEL
     voice="Puck",           # Options: Puck, Charon, Kore, Fenrir, Aoede
     temperature=0.7,        # Creativity (0.0 - 1.0)
     instructions="...",     # System prompt
 )
 ```
+
+### Turn detection
+
+Turn-taking runs on a **local Silero VAD**, not Gemini's server-side VAD. With the
+server VAD, 1-second utterances were marked as speech for 8–11 s and the delay
+compounded across turns. Locally it commits in ~2 s and stays flat.
+
+Requires `livekit-plugins-silero` (in `requirements.txt`). Set `LOCAL_VAD=0` to fall
+back to the server VAD.
 
 ### SyncTalk_2D Server Options
 
