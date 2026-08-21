@@ -57,7 +57,8 @@ def _crop_box(lms: np.ndarray, h: int, w: int) -> tuple[int, int, int, int]:
 
 class CorpusDataset(torch.utils.data.Dataset):
     def __init__(self, corpus_root, manifest, speakers, mode="ave", stride=1,
-                 neg_prob=0.5, min_neg_gap=5, cache_dir=None, audio_offset=0):
+                 neg_prob=0.5, min_neg_gap=5, cache_dir=None, audio_offset=0,
+                 min_box_ratio=0.35):
         self.root, self.mode = corpus_root, mode
         self.neg_prob, self.min_neg_gap = neg_prob, min_neg_gap
         # shifts the audio against the video by a fixed number of frames. Used
@@ -78,6 +79,7 @@ class CorpusDataset(torch.utils.data.Dataset):
         self.frames = []         # sampled frame indices per video
         self.valid = []          # every usable frame, for negative sampling
         index = []
+        dropped = 0
 
         for vi, vid in enumerate(self.videos):
             d = os.path.join(corpus_root, vid)
@@ -89,11 +91,26 @@ class CorpusDataset(torch.utils.data.Dataset):
             for a, b in vids[vid]["segments"]:
                 usable.extend(range(a, b))
             self.valid.append(np.array(usable, dtype=np.int64))
-            taken = usable[::stride]
+            boxes = self._boxes(d, vid, cache_dir)
+            self.boxes.append(boxes)
+
+            # Drop frames whose crop box is inverted or implausibly small. A
+            # detector can put a landmark below the bottom of the frame - one
+            # frame in this corpus has y0=488 in a 480px image - and its
+            # neighbours end up as 7-pixel boxes that would upscale to 328.
+            # Those are not faces. Costs 144 frames in 250,353 (0.06%).
+            w = boxes[:, 2] - boxes[:, 0]
+            h = boxes[:, 3] - boxes[:, 1]
+            med = max(float(np.median(np.maximum(w, 1))), 1.0)
+            ok = (w > 0) & (h > 0) & (w >= med * min_box_ratio) & \
+                 (h >= med * min_box_ratio)
+            taken = [f for f in usable[::stride] if f < len(ok) and ok[f]]
+            dropped += len(usable[::stride]) - len(taken)
             self.frames.append(taken)
-            self.boxes.append(self._boxes(d, vid, cache_dir))
             index.extend((vi, f) for f in taken)
 
+        if dropped:
+            print(f"  skipped {dropped} frame(s) with an implausible face box")
         self.index = index
 
     def _boxes(self, d, vid, cache_dir):
@@ -140,22 +157,54 @@ class CorpusDataset(torch.utils.data.Dataset):
     def _audio_window(self, feats, i):
         left, right = i - 8, i + 8
         pl, pr = max(0, -left), max(0, right - feats.shape[0])
-        w = np.asarray(feats[max(0, left):min(right, feats.shape[0])],
-                       dtype=np.float32)
+        # np.array, not np.asarray: the source is a read-only memmap and dtype
+        # already matches, so asarray handed back a non-writable view that
+        # torch.from_numpy warns about on every worker
+        w = np.array(feats[max(0, left):min(right, feats.shape[0])],
+                     dtype=np.float32)
         if pl:
             w = np.concatenate([np.zeros((pl, w.shape[1]), np.float32), w])
         if pr:
             w = np.concatenate([w, np.zeros((pr, w.shape[1]), np.float32)])
         return torch.from_numpy(w)
 
-    def __getitem__(self, k):
-        vi, idx = self.index[k]
+    def _face(self, vi, idx):
+        """The 320x320 crop for one frame, or None if it cannot be built."""
         d = os.path.join(self.root, self.videos[vi])
         img = cv2.imread(os.path.join(d, "full_body_img", f"{idx}.jpg"))
+        if img is None:
+            return None
         x0, y0, x1, y1 = self.boxes[vi][idx]
-        crop = cv2.resize(img[y0:y1, x0:x1], (328, 328), cv2.INTER_AREA)
+        region = img[y0:y1, x0:x1]
+        if region.size == 0:
+            return None
+        crop = cv2.resize(region, (328, 328), cv2.INTER_AREA)
+        return crop[4:324, 4:324]
+
+    def __getitem__(self, k):
+        vi, idx = self.index[k]
+        crop = self._face(vi, idx)
+        if crop is None:
+            # Bad frames are filtered up front, so reaching here means the
+            # filter missed one. Substitute a neighbour rather than raise: a
+            # single unreadable frame killing a multi-hour GPU run - which is
+            # exactly what happened before this guard existed - is a far worse
+            # outcome than one repeated sample.
+            for step in (1, -1, 2, -2, 3, -3):
+                alt = idx + step
+                if 0 <= alt < len(self.boxes[vi]):
+                    crop = self._face(vi, alt)
+                    if crop is not None:
+                        print(f"[warn] {self.videos[vi]} frame {idx} unusable; "
+                              f"substituted {alt}")
+                        idx = alt
+                        break
+            if crop is None:
+                raise RuntimeError(
+                    f"{self.videos[vi]}: frame {idx} and its neighbours are all "
+                    "unreadable - the dataset directory is damaged")
         face = torch.from_numpy(
-            crop[4:324, 4:324].transpose(2, 0, 1).astype(np.float32) / 255.0)
+            crop.transpose(2, 0, 1).astype(np.float32) / 255.0)
 
         # negative from the same video only - see module docstring
         pool = self.valid[vi]
@@ -271,7 +320,11 @@ def _run(a, train_loader, val_loader):
     model = SyncNet_color(a.asr).cuda()
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     use_amp = a.amp and torch.cuda.is_available()
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    # torch.amp.GradScaler, not torch.cuda.amp: the latter is deprecated and
+    # prints a FutureWarning on every run
+    scaler = (torch.amp.GradScaler("cuda", enabled=use_amp)
+              if hasattr(torch.amp, "GradScaler")
+              else torch.cuda.amp.GradScaler(enabled=use_amp))
 
     best, start, stale, best_ep = float("inf"), 0, 0, 0
     log = os.path.join(a.save_dir, "train_log.csv")
