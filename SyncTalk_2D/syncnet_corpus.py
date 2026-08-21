@@ -58,9 +58,23 @@ def _crop_box(lms: np.ndarray, h: int, w: int) -> tuple[int, int, int, int]:
 class CorpusDataset(torch.utils.data.Dataset):
     def __init__(self, corpus_root, manifest, speakers, mode="ave", stride=1,
                  neg_prob=0.5, min_neg_gap=5, cache_dir=None, audio_offset=0,
-                 min_box_ratio=0.35):
+                 min_box_ratio=0.35, crop_cache=None):
         self.root, self.mode = corpus_root, mode
         self.neg_prob, self.min_neg_gap = neg_prob, min_neg_gap
+
+        # Pre-decoded crops, built by build_crop_cache.py. When present a
+        # sample is a memcpy out of the page cache instead of a JPEG decode
+        # plus resize. Opened lazily per worker: a np.memmap cannot be pickled
+        # across the fork/spawn boundary.
+        self.crop_meta, self.crop_path, self._crops = None, None, None
+        if crop_cache:
+            meta_p = os.path.join(crop_cache, "crops.json")
+            dat_p = os.path.join(crop_cache, "crops.dat")
+            if os.path.exists(meta_p) and os.path.exists(dat_p):
+                self.crop_meta = json.loads(open(meta_p).read())
+                self.crop_path = dat_p
+            else:
+                print(f"[warn] no crop cache at {crop_cache}; decoding JPEGs")
         # shifts the audio against the video by a fixed number of frames. Used
         # only by the offset-curve test: a SyncNet that has genuinely learned
         # sync must score highest at 0 and fall off either side. One that has
@@ -113,7 +127,8 @@ class CorpusDataset(torch.utils.data.Dataset):
             print(f"  skipped {dropped} frame(s) with an implausible face box")
         self.index = index
 
-    def _boxes(self, d, vid, cache_dir):
+    @staticmethod
+    def _boxes(d, vid, cache_dir):
         """Crop boxes for every frame, computed once and cached.
 
         Reading and parsing a .lms file inside __getitem__ costs a small file
@@ -168,8 +183,30 @@ class CorpusDataset(torch.utils.data.Dataset):
             w = np.concatenate([w, np.zeros((pr, w.shape[1]), np.float32)])
         return torch.from_numpy(w)
 
+    def _row(self, vid, idx):
+        """Row of this frame in the crop cache, or None if it is not in it."""
+        e = self.crop_meta["videos"].get(vid)
+        if e is None:
+            return None
+        if not hasattr(self, "_rowmaps"):
+            self._rowmaps = {}
+        m = self._rowmaps.get(vid)
+        if m is None:
+            m = {f: i for i, f in enumerate(e["frames"])}
+            self._rowmaps[vid] = m
+        j = m.get(int(idx))
+        return None if j is None else e["start"] + j
+
     def _face(self, vi, idx):
         """The 320x320 crop for one frame, or None if it cannot be built."""
+        if self.crop_meta is not None:
+            row = self._row(self.videos[vi], idx)
+            if row is not None:
+                if self._crops is None:
+                    side, n = self.crop_meta["side"], self.crop_meta["total"]
+                    self._crops = np.memmap(self.crop_path, dtype=np.uint8,
+                                            mode="r", shape=(n, side, side, 3))
+                return np.asarray(self._crops[row])
         d = os.path.join(self.root, self.videos[vi])
         img = cv2.imread(os.path.join(d, "full_body_img", f"{idx}.jpg"))
         if img is None:
@@ -266,6 +303,9 @@ def main():
                         "0 disables and runs the full --epochs")
     p.add_argument("--amp", action="store_true")
     p.add_argument("--resume", default="")
+    p.add_argument("--crop_cache", default="",
+                   help="directory built by build_crop_cache.py. Turns each "
+                        "sample from a JPEG decode into a memcpy")
     p.add_argument("--cache_dir", default="",
                    help="where to keep the crop-box caches (default: alongside each video)")
     p.add_argument("--dry_run", action="store_true",
@@ -280,8 +320,13 @@ def main():
     print("validation is SPEAKER-DISJOINT: these voices never appear in training\n")
 
     cache = a.cache_dir or None
-    tr = CorpusDataset(a.corpus, man, train_spk, a.asr, a.stride, cache_dir=cache)
-    va = CorpusDataset(a.corpus, man, val_spk, a.asr, a.val_stride, cache_dir=cache)
+    cc = a.crop_cache or None
+    tr = CorpusDataset(a.corpus, man, train_spk, a.asr, a.stride,
+                       cache_dir=cache, crop_cache=cc)
+    va = CorpusDataset(a.corpus, man, val_spk, a.asr, a.val_stride,
+                       cache_dir=cache, crop_cache=cc)
+    if cc and tr.crop_meta is not None:
+        print("crop cache active - workers read decoded frames, not JPEGs")
     print(f"train {len(tr):,} samples over {len(tr.videos)} videos")
     print(f"val   {len(va):,} samples over {len(va.videos)} videos")
     steps = len(tr) // a.batch_size
