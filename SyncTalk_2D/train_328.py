@@ -52,9 +52,10 @@ def get_args():
                         help="Keep sync weight at 0 until this epoch so the generator learns "
                              "to reconstruct a face first.")
     parser.add_argument('--mask_version', type=str, default="v2_no_jaw",
-                        choices=["v2_no_jaw", "legacy"],
                         help="v2_no_jaw hides the jaw so the model cannot infer mouth "
-                             "shape from it. legacy reproduces the original leaky mask.")
+                             "shape from it. legacy reproduces the original leaky mask. "
+                             "jawN (N=0..10) exposes N rows of jaw, for ablations that "
+                             "vary the leak continuously; jaw10==legacy, jaw0==v2_no_jaw.")
 
     return parser.parse_args()
 
