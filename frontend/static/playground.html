@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Avatar Playground</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/livekit-client/2.5.8/livekit-client.umd.min.js"></script>
 <style>
@@ -43,10 +43,17 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* dvh follows the mobile URL bar as it retracts; the 100% above stays as
+     the fallback. With plain 100vh the controls sat under the browser
+     chrome on iOS and Android for the whole first scroll. */
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  overscroll-behavior: none;
 }
+
+[hidden] { display: none !important; }
 
 button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 button:disabled { cursor: not-allowed; }
@@ -62,10 +69,14 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   align-items: center;
   gap: 14px;
+  padding-left: max(18px, env(safe-area-inset-left));
+  padding-right: max(18px, env(safe-area-inset-right));
 }
 
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: -.01em; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: -.01em; min-width: 0; }
+.brand-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand-mark {
+  flex: 0 0 auto;
   width: 26px; height: 26px; border-radius: 7px;
   background: linear-gradient(135deg, var(--accent), #9b6ff5);
   display: grid; place-items: center; font-size: 14px;
@@ -109,6 +120,8 @@ button:disabled { cursor: not-allowed; }
 .btn-danger { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
 .btn-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
 .btn:disabled { opacity: .45; }
+/* Only ever shown once the session panel loses its column (see responsive). */
+.icon-btn { display: none; padding: 8px 11px; font-size: 15px; line-height: 1; }
 
 /* ---------- layout ---------- */
 .main {
@@ -116,6 +129,12 @@ button:disabled { cursor: not-allowed; }
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0,1fr) 340px 280px;
+  /* The implicit row was auto-sized, so a growing transcript stretched the
+     row past the viewport and took the video panel's height with it — the
+     avatar ended up squeezed into whatever rectangle was left. Pinning the
+     row to the shell puts the scrolling back where it belongs, in
+     .transcript-body. */
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--border); }
@@ -136,13 +155,20 @@ button:disabled { cursor: not-allowed; }
 }
 
 /* ---------- stage ---------- */
-.stage { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; padding: 22px; position: relative; }
+.stage {
+  flex: 1 1 0; min-height: 0; min-width: 0;
+  display: grid; place-items: center;
+  padding: 22px; position: relative;
+  container-type: size;
+}
 
 .video-frame {
+  /* Overwritten from the track's real dimensions on loadedmetadata, so the
+     frame is the shape of the video instead of a hardcoded square. */
+  --ar: 1;
   position: relative;
-  width: 100%; height: 100%;
-  max-width: min(100%, calc((100vh - 210px)));
-  aspect-ratio: 1 / 1;
+  width: 100%; max-width: 100%; max-height: 100%;
+  aspect-ratio: var(--ar);
   border-radius: 14px;
   overflow: hidden;
   background: #000;
@@ -150,6 +176,19 @@ button:disabled { cursor: not-allowed; }
   display: grid; place-items: center;
   transition: box-shadow .25s, border-color .25s;
 }
+/* Setting width AND height to 100% made aspect-ratio a no-op: the frame
+   became whatever rectangle the stage happened to be, and the avatar
+   letterboxed inside it. Deriving the width from the stage box keeps the
+   frame exactly the track's shape at the largest size that fits, at every
+   breakpoint, with no magic offsets to keep in sync. */
+@supports (container-type: size) {
+  .video-frame {
+    width: min(100cqw, 100cqh * var(--ar));
+    height: auto;
+    max-height: none;
+  }
+}
+
 .video-frame.speaking { border-color: #4f8ff766; box-shadow: 0 0 0 3px var(--accent-soft), 0 0 34px -6px #4f8ff755; }
 #videoSlot { width: 100%; height: 100%; display: none; }
 #videoSlot video { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -176,9 +215,13 @@ button:disabled { cursor: not-allowed; }
 .controls {
   flex: 0 0 auto;
   padding: 14px 18px;
+  padding-left: max(18px, env(safe-area-inset-left));
+  padding-right: max(18px, env(safe-area-inset-right));
+  padding-bottom: max(14px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
   background: var(--surface);
   display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
 }
 
 .mic-btn {
@@ -216,6 +259,8 @@ button:disabled { cursor: not-allowed; }
   transition: width .07s linear;
 }
 .controls-spacer { flex: 1; }
+
+.kbd-hint { font-size: 11.5px; color: var(--text-faint); }
 
 kbd {
   font-family: var(--mono); font-size: 10.5px;
@@ -263,6 +308,14 @@ kbd {
 .row .v.mono { font-family: var(--mono); font-size: 11.5px; }
 .row .v.dim { color: var(--text-faint); font-weight: 400; }
 
+.drawer-close {
+  display: none; margin-left: auto;
+  color: var(--text-faint); font-size: 13px; line-height: 1;
+  padding: 4px 7px; border-radius: 6px;
+}
+.drawer-close:hover { color: var(--text); background: var(--surface-3); }
+.side-scrim { display: none; }
+
 /* ---------- modal ---------- */
 .modal {
   position: fixed; inset: 0; z-index: 100;
@@ -272,6 +325,7 @@ kbd {
 .modal.open { display: flex; }
 .modal-card {
   width: 100%; max-width: 400px;
+  max-height: calc(100dvh - 40px); overflow-y: auto;
   background: var(--surface); border: 1px solid var(--border-strong);
   border-radius: 14px; padding: 24px; box-shadow: var(--shadow);
   animation: rise .16s ease-out;
@@ -292,7 +346,12 @@ kbd {
 .modal-actions .btn { flex: 1; }
 
 /* ---------- toasts ---------- */
-.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+.toasts {
+  position: fixed; z-index: 200;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 8px;
+}
 .toast {
   min-width: 230px; max-width: 340px;
   padding: 11px 13px; border-radius: var(--radius-sm);
@@ -306,19 +365,139 @@ kbd {
 .toast[data-kind="ok"] .toast-icon { color: var(--success); }
 .toast-icon { flex: 0 0 auto; }
 
-/* ---------- responsive ---------- */
-@media (max-width: 1100px) {
-  .main { grid-template-columns: minmax(0,1fr) 300px; }
-  .panel.side { display: none; }
+/* ---------- responsive ---------- *
+ *
+ * Three tiers, and the shell stays fixed in all of them: a video call that
+ * scrolls off screen while you read the transcript is not usable, so the
+ * page itself never scrolls — only .transcript-body and .side-body do.
+ * ------------------------------------------------------------------ */
+
+/* Tablet / small laptop: the session panel gives up its column and docks
+   under the transcript. It used to be display:none here, which silently
+   took room name, duration, connection quality, agent identity and mic
+   state with it on every screen below 1100px. */
+@media (max-width: 1199px) {
+  .main {
+    grid-template-columns: minmax(0,1fr) minmax(260px, 320px);
+    grid-template-rows: minmax(0,1fr) auto;
+  }
+  .panel.stage-panel { grid-column: 1; grid-row: 1 / -1; }
+  .panel.transcript  { grid-column: 2; grid-row: 1; }
+  .panel.side        { grid-column: 2; grid-row: 2; border-top: 1px solid var(--border); }
+  .panel.side .side-body { max-height: 34dvh; padding: 12px; gap: 12px; }
 }
-@media (max-width: 800px) {
-  body { overflow: auto; }
-  .main { grid-template-columns: 1fr; }
-  .panel { border-left: none; border-top: 1px solid var(--border); }
-  .stage { padding: 14px; }
-  .video-frame { max-width: 100%; max-height: 52vh; }
-  .panel.transcript { min-height: 240px; }
-  .level-track { display: none; }
+
+/* Phone: one column. The stage takes a fixed slice of the viewport and the
+   transcript takes everything left over, so adding messages can no longer
+   change the size of the avatar. Session info moves to a drawer. */
+@media (max-width: 899px) {
+  .main {
+    grid-template-columns: minmax(0,1fr);
+    grid-template-rows: auto minmax(0,1fr);
+  }
+  .panel { border-left: none; }
+  .panel.stage-panel { grid-column: 1; grid-row: 1; }
+  .panel.transcript  { grid-column: 1; grid-row: 2; border-top: 1px solid var(--border); }
+
+  /* No size container here: the frame's own cap is enough to bound it, and
+     letting the stage hug the frame means a wide track doesn't reserve a
+     slab of dead space above the transcript. size containment would force
+     a definite height, which is exactly what we're avoiding. */
+  .stage { flex: 0 0 auto; height: auto; container-type: normal; padding: 12px; }
+  .video-frame { width: min(100%, 44dvh * var(--ar)); height: auto; max-height: none; }
+
+  .header { height: 52px; gap: 9px; }
+  .header { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .brand-sub { display: none; }
+  .icon-btn { display: inline-flex; }
+  .controls { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .kbd-hint { display: none; }          /* nothing here has an M key to press */
+  .level-track { max-width: none; }     /* the meter is the only proof the mic works — keep it */
+  .transcript-body { padding: 12px; }
+  .panel-head { padding: 10px 12px; }
+
+  /* Off-canvas session drawer. */
+  .panel.side {
+    position: fixed; top: 0; right: 0; bottom: 0; left: auto;
+    width: min(320px, 86vw); z-index: 90;
+    background: var(--bg);
+    border-top: none; border-left: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-right: env(safe-area-inset-right);
+    transform: translateX(100%);
+    transition: transform .22s ease;
+  }
+  .panel.side.open { transform: none; }
+  .panel.side .side-body { max-height: none; }
+  .drawer-close { display: inline-flex; align-items: center; }
+  .side-scrim:not([hidden]) {
+    display: block; position: fixed; inset: 0; z-index: 80;
+    background: #000000a6; backdrop-filter: blur(2px);
+  }
+}
+
+/* Landscape phone: stacking would leave the avatar a letterbox strip, so
+   go back to side-by-side and let the stage flex again. */
+@media (max-width: 899px) and (orientation: landscape) and (max-height: 560px) {
+  .main {
+    grid-template-columns: minmax(0,1fr) minmax(220px, 38%);
+    grid-template-rows: minmax(0,1fr);
+  }
+  .panel.transcript { grid-column: 2; grid-row: 1; border-top: none; border-left: 1px solid var(--border); }
+  .stage { flex: 1 1 0; height: auto; container-type: size; }
+  /* Dropped wholesale on browsers without cq units, which falls back to the
+     portrait rule above. */
+  .video-frame { width: min(100cqw, 100cqh * var(--ar)); height: auto; }
+}
+
+@media (max-width: 560px) {
+  .toasts { left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); }
+  .toast { min-width: 0; max-width: none; }
+}
+
+/* Very narrow: the connection status matters more than the product name. */
+@media (max-width: 440px) {
+  .brand-text { display: none; }
+  .btn { padding: 8px 13px; }
+}
+@media (max-width: 400px) {
+  #statusText { display: none; }
+  .pill { padding: 5px 9px; }
+}
+
+/* Phone modal as a bottom sheet — reachable by thumb, and it survives the
+   on-screen keyboard opening under it. */
+@media (max-width: 480px) {
+  .modal { align-items: flex-end; padding: 0; }
+  .modal-card {
+    max-width: none; border-radius: 16px 16px 0 0;
+    padding: 22px 18px calc(22px + env(safe-area-inset-bottom));
+    max-height: 100dvh;
+  }
+}
+
+/* Touch input, regardless of width: 34px-tall buttons are below every
+   platform's minimum target, and any input under 16px makes iOS Safari
+   zoom the whole page the moment it gets focus. */
+@media (pointer: coarse) {
+  .btn, .mic-btn { min-height: 44px; }
+  .icon-btn { min-width: 44px; justify-content: center; }
+  .drawer-close { min-width: 32px; min-height: 32px; justify-content: center; }
+  .field input { font-size: 16px; padding: 11px 12px; }
+  .row { padding: 11px 12px; }
+}
+
+/* Applied for one frame while the layout tier changes, so the session panel
+   doesn't visibly slide off screen when the drawer breakpoint is crossed. */
+body.no-anim *, body.no-anim *::before, body.no-anim *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 </style>
 </head>
@@ -327,20 +506,21 @@ kbd {
 <header class="header">
   <div class="brand">
     <div class="brand-mark">◆</div>
-    <div>
+    <div class="brand-text">
       Avatar Playground
       <div class="brand-sub">Bangla real-time avatar</div>
     </div>
   </div>
   <div class="header-spacer"></div>
   <span class="pill" id="statusPill" data-state="idle"><span class="dot"></span><span id="statusText">Disconnected</span></span>
+  <button class="btn btn-ghost icon-btn" id="infoBtn" aria-label="Session info" aria-expanded="false" aria-controls="sidePanel">&#9432;</button>
   <button class="btn btn-primary" id="connectBtn">Connect</button>
   <button class="btn btn-danger" id="disconnectBtn" hidden>Disconnect</button>
 </header>
 
 <div class="main">
   <!-- video -->
-  <section class="panel">
+  <section class="panel stage-panel">
     <div class="panel-head">Agent video<span class="count" id="resDisplay"></span></div>
     <div class="stage">
       <div class="video-frame" id="videoFrame">
@@ -359,7 +539,7 @@ kbd {
       </button>
       <div class="level-track"><div class="level-fill" id="levelFill"></div></div>
       <div class="controls-spacer"></div>
-      <span style="font-size:11.5px;color:var(--text-faint)">Press <kbd>M</kbd> to toggle</span>
+      <span class="kbd-hint">Press <kbd>M</kbd> to toggle</span>
     </div>
   </section>
 
@@ -375,8 +555,8 @@ kbd {
   </section>
 
   <!-- info -->
-  <aside class="panel side">
-    <div class="panel-head">Session</div>
+  <aside class="panel side" id="sidePanel">
+    <div class="panel-head">Session<button class="drawer-close" id="sideCloseBtn" aria-label="Close session info">&#10005;</button></div>
     <div class="side-body">
       <div class="card">
         <div class="card-head">Room</div>
@@ -397,6 +577,8 @@ kbd {
     </div>
   </aside>
 </div>
+
+<div class="side-scrim" id="sideScrim" hidden></div>
 
 <!-- connect modal -->
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
@@ -463,7 +645,20 @@ const el = {
   iAgentStatus: $("iAgentStatus"), iAgentId: $("iAgentId"),
   iUser: $("iUser"), iMic: $("iMic"),
   toasts: $("toasts"),
+  sidePanel: $("sidePanel"), sideScrim: $("sideScrim"),
+  infoBtn: $("infoBtn"), sideCloseBtn: $("sideCloseBtn"),
 };
+
+/* The session panel is a column on wide screens and a drawer below 900px.
+   This query is the same breakpoint the stylesheet uses. */
+const NARROW = window.matchMedia("(max-width: 899px)");
+
+function setDrawer(open) {
+  el.sidePanel.classList.toggle("open", open);
+  el.sideScrim.hidden = !open;
+  el.infoBtn.setAttribute("aria-expanded", String(open));
+}
+function drawerOpen() { return el.sidePanel.classList.contains("open"); }
 
 /* ---------------- UI helpers ---------------- */
 
@@ -479,6 +674,10 @@ function setPhase(phase) {
   const [state, label] = STATUS[phase] || STATUS.idle;
   el.statusPill.dataset.state = state;
   el.statusText.textContent = label;
+  // Narrow screens hide the label and show only the dot, so the pill has to
+  // carry the state itself or it becomes an unlabelled colour swatch.
+  el.statusPill.setAttribute("aria-label", label);
+  el.statusPill.title = label;
 
   const live = phase === "connected" || phase === "reconnecting";
   const busy = phase === "connecting";
@@ -685,6 +884,11 @@ function attachTrack(track) {
     node.play().catch(() => {});
     node.addEventListener("loadedmetadata", () => {
       el.resDisplay.textContent = node.videoWidth + "×" + node.videoHeight;
+      // Match the frame to the track instead of assuming a square, so the
+      // avatar fills it edge to edge rather than sitting in black bars.
+      if (node.videoWidth && node.videoHeight) {
+        el.videoFrame.style.setProperty("--ar", (node.videoWidth / node.videoHeight).toFixed(4));
+      }
     });
   } else if (track.kind === "audio") {
     const node = track.attach();
@@ -703,6 +907,7 @@ function detachTrack(track) {
   if (track.kind === "video") {
     el.videoFrame.classList.remove("has-video");
     el.videoSlot.replaceChildren();
+    el.videoFrame.style.removeProperty("--ar");
     el.resDisplay.textContent = "";
   }
 }
@@ -838,6 +1043,7 @@ function teardown() {
   el.videoSlot.replaceChildren();
   el.audioSlot.replaceChildren();
   el.videoFrame.classList.remove("has-video", "speaking");
+  el.videoFrame.style.removeProperty("--ar");
   el.resDisplay.textContent = "";
 
   el.iRoom.textContent = "—";        el.iRoom.classList.add("dim");
@@ -862,12 +1068,27 @@ el.joinBtn.addEventListener("click", connect);
 el.disconnectBtn.addEventListener("click", disconnect);
 el.micBtn.addEventListener("click", toggleMic);
 
+el.infoBtn.addEventListener("click", () => setDrawer(!drawerOpen()));
+el.sideCloseBtn.addEventListener("click", () => setDrawer(false));
+el.sideScrim.addEventListener("click", () => setDrawer(false));
+
+// Rotating to landscape or widening the window gives the panel its column
+// back; leaving .open set would strand it as a floating drawer.
+const onWidthChange = (e) => {
+  document.body.classList.add("no-anim");
+  if (!e.matches) setDrawer(false);
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("no-anim")));
+};
+if (NARROW.addEventListener) NARROW.addEventListener("change", onWidthChange);
+else NARROW.addListener(onWidthChange);
+
 el.modal.addEventListener("click", (e) => { if (e.target === el.modal) closeModal(); });
 [el.fRoom, el.fUser].forEach((input) =>
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); }));
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && el.modal.classList.contains("open")) { closeModal(); return; }
+  if (e.key === "Escape" && drawerOpen()) { setDrawer(false); return; }
   const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
   if (!typing && (e.key === "m" || e.key === "M") && S.room) { e.preventDefault(); toggleMic(); }
 });
