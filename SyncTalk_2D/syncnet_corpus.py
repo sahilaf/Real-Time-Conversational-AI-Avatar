@@ -240,8 +240,11 @@ class CorpusDataset(torch.utils.data.Dataset):
                 raise RuntimeError(
                     f"{self.videos[vi]}: frame {idx} and its neighbours are all "
                     "unreadable - the dataset directory is damaged")
-        face = torch.from_numpy(
-            crop.transpose(2, 0, 1).astype(np.float32) / 255.0)
+        # uint8, converted to float on the GPU by to_float() below. Converting
+        # here would make every worker do the divide AND send 4x the bytes over
+        # PCIe - 79 MB per batch instead of 20. The arithmetic is identical
+        # either way; only where it happens changes.
+        face = torch.from_numpy(np.ascontiguousarray(crop.transpose(2, 0, 1)))
 
         # negative from the same video only - see module docstring
         pool = self.valid[vi]
@@ -261,6 +264,37 @@ class CorpusDataset(torch.utils.data.Dataset):
         aud = self._audio_window(self.audio[vi], src)
         aud = aud.reshape(32, 16, 16) if self.mode == "ave" else aud.reshape(16, 32, 32)
         return face, aud, y.float()
+
+
+def to_float(face):
+    """uint8 CHW batch on the host -> normalised float32 on the GPU."""
+    return face.cuda(non_blocking=True).float().div_(255.0)
+
+
+@torch.no_grad()
+def evaluate_amp(model, loader, use_amp):
+    """Validation under the same precision as training.
+
+    syncnet_328.evaluate runs fp32 and expects float input. Validation every
+    epoch over ~10k samples in fp32 was costing ~51 s an epoch, about 15% of
+    the run, for a number that only has to rank checkpoints.
+    """
+    import torch.nn.functional as F
+    model.eval()
+    losses, pos, neg = [], [], []
+    for face, aud, y in loader:
+        face, aud, y = to_float(face), aud.cuda(non_blocking=True), y.cuda(non_blocking=True)
+        with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            a, v = model(face, aud)
+        a, v = a.float(), v.float()
+        losses.append(cosine_loss(a, v, y).item())
+        d = F.cosine_similarity(a, v)
+        m = y.squeeze(1) > 0.5
+        pos += d[m].tolist()
+        neg += d[~m].tolist()
+    model.train()
+    mean = lambda xs: sum(xs) / len(xs) if xs else float("nan")
+    return mean(losses), mean(pos), mean(neg)
 
 
 def split_speakers(manifest, n_val, seed=0):
@@ -390,7 +424,8 @@ def _run(a, train_loader, val_loader):
     for ep in range(start, a.epochs):
         model.train(); losses = []
         for face, aud, y in tqdm(train_loader, desc=f"epoch {ep+1}/{a.epochs}"):
-            face, aud, y = face.cuda(non_blocking=True), aud.cuda(non_blocking=True), y.cuda(non_blocking=True)
+            face = to_float(face)
+            aud, y = aud.cuda(non_blocking=True), y.cuda(non_blocking=True)
             opt.zero_grad(set_to_none=True)
             with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                 ae, fe = model(face, aud)
@@ -399,7 +434,7 @@ def _run(a, train_loader, val_loader):
             scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
             losses.append(loss.item())
         tl = sum(losses) / len(losses)
-        vl, pos, neg = evaluate(model, val_loader)
+        vl, pos, neg = evaluate_amp(model, val_loader, use_amp)
         print(f"epoch {ep+1}  train {tl:.4f}  val {vl:.4f}  "
               f"pos {pos:.4f}  neg {neg:.4f}  gap {pos-neg:.4f}")
         open(log, "a").write(f"{ep+1},{tl:.6f},{vl:.6f},{pos:.6f},{neg:.6f},{pos-neg:.6f}\n")
