@@ -24,6 +24,12 @@ parser = argparse.ArgumentParser(description='Train',
 parser.add_argument('--asr', type=str, default="ave")
 parser.add_argument('--name', type=str, default="May")
 parser.add_argument('--audio_path', type=str, default="demo/talk_hb.wav")
+parser.add_argument('--output_name', type=str, default=None,
+                    help="Generated video filename inside result/; .mp4 is added if omitted.")
+parser.add_argument('--checkpoint_dir', type=str, default=None,
+                    help="Checkpoint directory; defaults to checkpoint/<name>.")
+parser.add_argument('--checkpoint', type=str, default=None,
+                    help="Checkpoint filename inside checkpoint/<name>; defaults to the latest numbered checkpoint.")
 parser.add_argument('--start_frame', type=int, default=0)
 parser.add_argument('--parsing', type=bool, default=False)
 parser.add_argument('--ssl_model', type=str, default="facebook/wav2vec2-xls-r-300m",
@@ -44,17 +50,22 @@ parser.add_argument('--feather', type=int, default=16,
                          "its bottom edge, hiding the join at the chin. 0 = hard paste.")
 args = parser.parse_args()
 
-checkpoint_path = os.path.join(".", "checkpoint", args.name)
+checkpoint_path = args.checkpoint_dir or os.path.join(".", "checkpoint", args.name)
 # Get the latest numbered checkpoint. Only epoch-numbered files are plain
 # state_dicts; last.pth is a resume bundle (model+optimizer+scaler) and would
 # both break int() here and fail load_state_dict below.
-checkpoint_files = [f for f in os.listdir(checkpoint_path)
-                    if f.endswith('.pth') and os.path.splitext(f)[0].isdigit()]
-if not checkpoint_files:
-    raise FileNotFoundError(
-        f"No epoch-numbered .pth in {checkpoint_path}. "
-        "Training saves those every 5 epochs; last.pth alone is not usable here.")
-checkpoint = os.path.join(checkpoint_path, sorted(checkpoint_files, key=lambda x: int(x.split(".")[0]))[-1])
+if args.checkpoint:
+    checkpoint = os.path.join(checkpoint_path, args.checkpoint)
+    if not os.path.isfile(checkpoint):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+else:
+    checkpoint_files = [f for f in os.listdir(checkpoint_path)
+                        if f.endswith('.pth') and os.path.splitext(f)[0].isdigit()]
+    if not checkpoint_files:
+        raise FileNotFoundError(
+            f"No epoch-numbered .pth in {checkpoint_path}. "
+            "Training saves those every 5 epochs; last.pth alone is not usable here.")
+    checkpoint = os.path.join(checkpoint_path, sorted(checkpoint_files, key=lambda x: int(x.split(".")[0]))[-1])
 print(checkpoint)
 
 # The mask must match what this checkpoint trained with, or the model sees an
@@ -69,7 +80,10 @@ audio_filename = os.path.basename(args.audio_path)
 audio_name_without_ext = os.path.splitext(audio_filename)[0]
 checkpoint_name = os.path.splitext(os.path.basename(checkpoint))[0]
 
-save_path = os.path.join(".", "result", f"{args.name}_{audio_name_without_ext}_{checkpoint_name}.mp4")
+output_name = args.output_name or f"{args.name}_{audio_name_without_ext}_{checkpoint_name}.mp4"
+if not os.path.splitext(output_name)[1]:
+    output_name += ".mp4"
+save_path = os.path.join(".", "result", os.path.basename(output_name))
 temp_save_path = save_path.replace(".mp4", "_temp.mp4")
 # result/ is gitignored, so it does not exist after a fresh clone. cv2.VideoWriter
 # fails SILENTLY when the directory is missing - write() becomes a no-op and the
