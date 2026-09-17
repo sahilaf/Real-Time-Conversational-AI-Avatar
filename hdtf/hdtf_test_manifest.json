@@ -1,0 +1,251 @@
+{
+ "dataset": "HDTF",
+ "subset": "fydp_test_v1",
+ "n": 15,
+ "clip_seconds": 30.88,
+ "fps": 25,
+ "out_resolution": 512,
+ "note": "One clip per identity. Take 30.88s starting 5s into the annotated range so the window never touches the boundary. Crop window and ratio are HDTF originals; media is never redistributed.",
+ "clips": [
+  {
+   "split": "RD",
+   "name": "Radio56",
+   "identity": "Radio",
+   "url": "https://www.youtube.com/watch?v=_NIUdiGXvT8",
+   "start": 2,
+   "end": 80,
+   "crop": {
+    "w": 1455,
+    "h": 1455,
+    "x": 1213,
+    "y": 0
+   },
+   "ratio": 1.2,
+   "resolution": 2160
+  },
+  {
+   "split": "WDA",
+   "name": "AdamSchiff",
+   "identity": "AdamSchiff",
+   "url": "https://www.youtube.com/watch?v=wMypCqkYKS8&t=8s",
+   "start": 5,
+   "end": 280,
+   "crop": {
+    "w": 726,
+    "h": 726,
+    "x": 608,
+    "y": 0
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WRA",
+   "name": "AllenWest",
+   "identity": "AllenWest",
+   "url": "https://www.youtube.com/watch?v=HAVyoVVjBEE",
+   "start": 20,
+   "end": 295,
+   "crop": {
+    "w": 656,
+    "h": 656,
+    "x": 447,
+    "y": 0
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WDA",
+   "name": "AdamSmith",
+   "identity": "AdamSmith",
+   "url": "https://www.youtube.com/watch?v=GHJJxq0Qojc",
+   "start": 2,
+   "end": 295,
+   "crop": {
+    "w": 958,
+    "h": 958,
+    "x": 532,
+    "y": 0
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WRA",
+   "name": "AnnWagner",
+   "identity": "AnnWagner",
+   "url": "https://www.youtube.com/watch?v=GIdx0OP5j5c",
+   "start": 5,
+   "end": 130,
+   "crop": {
+    "w": 727,
+    "h": 727,
+    "x": 629,
+    "y": 156
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WDA",
+   "name": "AmyKlobuchar1",
+   "identity": "AmyKlobuchar",
+   "url": "https://www.youtube.com/watch?v=EyHSdWDYm1M",
+   "start": 35,
+   "end": 165,
+   "crop": {
+    "w": 1005,
+    "h": 1005,
+    "x": 487,
+    "y": 0
+   },
+   "ratio": 1.0,
+   "resolution": 1080
+  },
+  {
+   "split": "WRA",
+   "name": "AustinScott2",
+   "identity": "AustinScott",
+   "url": "https://www.youtube.com/watch?v=y1S0jd4xoeA",
+   "start": 5,
+   "end": 55,
+   "crop": {
+    "w": 599,
+    "h": 599,
+    "x": 733,
+    "y": 0
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WDA",
+   "name": "AndyKim",
+   "identity": "AndyKim",
+   "url": "https://www.youtube.com/watch?v=R15EcGxd-4s",
+   "start": 2,
+   "end": 280,
+   "crop": {
+    "w": 823,
+    "h": 823,
+    "x": 596,
+    "y": 0
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WRA",
+   "name": "BobbySchilling",
+   "identity": "BobbySchilling",
+   "url": "https://www.youtube.com/watch?v=nSw4tC2CsR4",
+   "start": 65,
+   "end": 135,
+   "crop": {
+    "w": 966,
+    "h": 966,
+    "x": 309,
+    "y": 0
+   },
+   "ratio": 1.0,
+   "resolution": 1080
+  },
+  {
+   "split": "WDA",
+   "name": "AndyLevin",
+   "identity": "AndyLevin",
+   "url": "https://www.youtube.com/watch?v=aMl1jNTqBE8",
+   "start": 5,
+   "end": 200,
+   "crop": {
+    "w": 818,
+    "h": 818,
+    "x": 552,
+    "y": 0
+   },
+   "ratio": 1.0,
+   "resolution": 1080
+  },
+  {
+   "split": "WRA",
+   "name": "CathyMcMorrisRodgers0",
+   "identity": "CathyMcMorrisRodgers",
+   "url": "https://www.youtube.com/watch?v=il5U_vG9Jnk",
+   "start": 2,
+   "end": 245,
+   "crop": {
+    "w": 746,
+    "h": 746,
+    "x": 498,
+    "y": 12
+   },
+   "ratio": 1.0,
+   "resolution": 1080
+  },
+  {
+   "split": "WDA",
+   "name": "BarackObama",
+   "identity": "BarackObama",
+   "url": "https://www.youtube.com/watch?v=tvA_jbuL0Jo",
+   "start": 2,
+   "end": 145,
+   "crop": {
+    "w": 1034,
+    "h": 1034,
+    "x": 500,
+    "y": 0
+   },
+   "ratio": 1.0,
+   "resolution": 1080
+  },
+  {
+   "split": "WRA",
+   "name": "CoryGardner0",
+   "identity": "CoryGardner",
+   "url": "https://www.youtube.com/watch?v=jSw_GUq6ato",
+   "start": 12,
+   "end": 355,
+   "crop": {
+    "w": 831,
+    "h": 831,
+    "x": 555,
+    "y": 0
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WDA",
+   "name": "BarbaraLee1",
+   "identity": "BarbaraLee",
+   "url": "https://www.youtube.com/watch?v=4LO4cC86OI0",
+   "start": 4,
+   "end": 192,
+   "crop": {
+    "w": 653,
+    "h": 653,
+    "x": 607,
+    "y": 41
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  },
+  {
+   "split": "WRA",
+   "name": "DanNewhouse",
+   "identity": "DanNewhouse",
+   "url": "https://www.youtube.com/watch?v=W0Wi9w6Keh0",
+   "start": 5,
+   "end": 150,
+   "crop": {
+    "w": 729,
+    "h": 729,
+    "x": 536,
+    "y": 24
+   },
+   "ratio": 1.2,
+   "resolution": 1080
+  }
+ ]
+}

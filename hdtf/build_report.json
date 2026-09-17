@@ -1,0 +1,153 @@
+{
+ "attempted": 15,
+ "succeeded": 14,
+ "failed": [
+  {
+   "identity": "AllenWest",
+   "reason": "download"
+  }
+ ],
+ "retrieved": "2026-09-17",
+ "clips": [
+  {
+   "identity": "Radio",
+   "frames": 772,
+   "source_wh": [
+    3840,
+    2160
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\Radio.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\Radio.wav"
+  },
+  {
+   "identity": "AdamSchiff",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AdamSchiff.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AdamSchiff.wav"
+  },
+  {
+   "identity": "AdamSmith",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AdamSmith.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AdamSmith.wav"
+  },
+  {
+   "identity": "AnnWagner",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AnnWagner.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AnnWagner.wav"
+  },
+  {
+   "identity": "AmyKlobuchar",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AmyKlobuchar.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AmyKlobuchar.wav"
+  },
+  {
+   "identity": "AustinScott",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AustinScott.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AustinScott.wav"
+  },
+  {
+   "identity": "AndyKim",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AndyKim.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AndyKim.wav"
+  },
+  {
+   "identity": "BobbySchilling",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\BobbySchilling.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\BobbySchilling.wav"
+  },
+  {
+   "identity": "AndyLevin",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AndyLevin.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\AndyLevin.wav"
+  },
+  {
+   "identity": "CathyMcMorrisRodgers",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\CathyMcMorrisRodgers.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\CathyMcMorrisRodgers.wav"
+  },
+  {
+   "identity": "BarackObama",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\BarackObama.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\BarackObama.wav"
+  },
+  {
+   "identity": "CoryGardner",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\CoryGardner.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\CoryGardner.wav"
+  },
+  {
+   "identity": "BarbaraLee",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\BarbaraLee.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\BarbaraLee.wav"
+  },
+  {
+   "identity": "DanNewhouse",
+   "frames": 772,
+   "source_wh": [
+    1920,
+    1080
+   ],
+   "video": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\DanNewhouse.mp4",
+   "audio": "C:\\Users\\sahil\\Dropbox\\PC\\Documents\\projects\\Fydp_v2\\hdtf\\clips\\DanNewhouse.wav"
+  }
+ ]
+}
