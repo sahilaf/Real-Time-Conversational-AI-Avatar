@@ -19,6 +19,15 @@ def get_args():
     parser.add_argument('--use_syncnet', action='store_true', help="if use syncnet, you need to set 'syncnet_checkpoint'")
     parser.add_argument('--syncnet_checkpoint', type=str, default="")
     parser.add_argument('--dataset_dir', type=str)
+    parser.add_argument('--manifest', type=str, default="",
+                        help="evaluation/manifests/<name>_splits.json. Train on its "
+                             "train split ONLY. Without this the model trains on every "
+                             "frame in the directory, including the test split it is "
+                             "later scored on.")
+    parser.add_argument('--train_start', type=int, default=None,
+                        help="first frame to train on; overrides --manifest")
+    parser.add_argument('--train_end', type=int, default=None,
+                        help="last frame to train on, inclusive; overrides --manifest")
     parser.add_argument('--save_dir', type=str, help="trained model save path.")
     parser.add_argument('--see_res', action='store_true')
     parser.add_argument('--epochs', type=int, default=100)
@@ -142,6 +151,24 @@ def train(net, epoch, batch_size, lr):
     # Record how this model was trained so inference/eval reproduce it exactly.
     # A checkpoint dir without this file is assumed legacy (pre-jaw-mask-fix).
     import json as _json
+
+    # Resolve which frames this run may see. Explicit flags win over the manifest.
+    train_start, train_end = args.train_start, args.train_end
+    if args.manifest:
+        with open(args.manifest) as _f:
+            _tr = _json.load(_f)["splits"]["train"]
+        if train_start is None:
+            train_start = _tr["start"]
+        if train_end is None:
+            train_end = _tr["end"]
+    if train_start is None:
+        train_start = 0
+    if train_end is None:
+        print("WARNING: no --manifest and no --train_end. Training on EVERY frame, "
+              "including any held-out test split. Reconstruction metrics measured on "
+              "that split will be inflated and are not comparable with person-generic "
+              "baselines, which have never seen this video.")
+
     with open(os.path.join(save_dir, "train_config.json"), "w") as _f:
         _json.dump({"mask_version": args.mask_version, "asr": args.asr,
                     "use_syncnet": bool(use_syncnet),
@@ -149,7 +176,10 @@ def train(net, epoch, batch_size, lr):
                     "sync_weight": args.sync_weight,
                     "vgg_weight": args.vgg_weight,
                     "chroma_weight": args.chroma_weight,
-                    "sync_start_epoch": args.sync_start_epoch}, _f, indent=2)
+                    "sync_start_epoch": args.sync_start_epoch,
+                    "manifest": args.manifest,
+                    "train_start": train_start,
+                    "train_end": train_end}, _f, indent=2)
     print(f"Sync loss: weight {args.sync_weight} from epoch {args.sync_start_epoch}")
     print(f"Mouth mask: {args.mask_version} "
           f"({'jaw hidden' if args.mask_version != 'legacy' else 'jaw VISIBLE - leaks mouth shape'})")
@@ -157,7 +187,8 @@ def train(net, epoch, batch_size, lr):
     dataset_list = []
     dataset_dir_list = [args.dataset_dir]
     for dataset_dir in dataset_dir_list:
-        dataset = MyDataset(dataset_dir, args.asr, mask_version=args.mask_version)
+        dataset = MyDataset(dataset_dir, args.asr, mask_version=args.mask_version,
+                            start=train_start, end=train_end)
         train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                                       drop_last=False, num_workers=args.num_workers,
                                       persistent_workers=(args.num_workers > 0))

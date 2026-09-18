@@ -12,14 +12,21 @@ from utils import apply_mouth_mask, MASK_V2
 
 class MyDataset(Dataset):
 
-    def __init__(self, img_dir, mode, mask_version=MASK_V2):
+    def __init__(self, img_dir, mode, mask_version=MASK_V2, start=0, end=None):
+        """start/end bound the frames this dataset may use, inclusive.
+
+        Pass the manifest's train split. Without a bound the model trains on
+        EVERY frame in the directory, including the held-out test split it is
+        later scored on, and its reconstruction numbers are meaningless next to
+        person-generic baselines that have never seen the video at all.
+        """
 
         self.img_path_list = []
         self.lms_path_list = []
         self.mode = mode
         # Must match what inference and evaluation use - see utils.apply_mouth_mask
         self.mask_version = mask_version
-        
+
         for i in range(len(os.listdir(img_dir+"/full_body_img/"))):
 
             img_path = os.path.join(img_dir+"/full_body_img/", str(i)+".jpg")
@@ -38,14 +45,27 @@ class MyDataset(Dataset):
 
 
         self.audio_feats = self.audio_feats.astype(np.float32)
+
+        # Usable indices are bounded by BOTH the frames and the audio features -
+        # the audio track runs a frame or two short of the video.
+        last = min(len(self.img_path_list), self.audio_feats.shape[0] - 1) - 1
+        lo = max(0, int(start))
+        hi = last if end is None else min(int(end), last)
+        if hi < lo:
+            raise ValueError(f"empty frame range {start}..{end} (usable 0..{last})")
+        self.indices = list(range(lo, hi + 1))
+
         print(img_dir)
         print(self.audio_feats.shape)
         print(len(self.img_path_list))
-        
+        if (lo, hi) == (0, last):
+            print(f"Frames {lo}..{hi} ({len(self.indices)}) - WHOLE VIDEO, no split "
+                  f"held out. Pass --manifest to train on the train split only.")
+        else:
+            print(f"Frames {lo}..{hi} ({len(self.indices)} of {last + 1} usable)")
+
     def __len__(self):
-        # return len(self.img_path_list)-1
-        # return len(self.img_path_list)
-        return self.audio_feats.shape[0]-1
+        return len(self.indices)
     
     def get_audio_features(self, features, index):
         left = index - 8
@@ -135,11 +155,15 @@ class MyDataset(Dataset):
 
         return img_concat_T, img_real_T
 
-    def __getitem__(self, idx):
+    def __getitem__(self, i):
+        idx = self.indices[i]
         img = cv2.imread(self.img_path_list[idx])
         lms_path = self.lms_path_list[idx]
-        
-        ex_int = random.randint(0, self.__len__()-1)
+
+        # The appearance reference must come from the SAME split as the target.
+        # Drawing it from the whole video is a second, quieter leak: the target
+        # frame stays in-split while the reference carries held-out pixels in.
+        ex_int = self.indices[random.randint(0, len(self.indices)-1)]
         img_ex = cv2.imread(self.img_path_list[ex_int])
         lms_path_ex = self.lms_path_list[ex_int]
         
