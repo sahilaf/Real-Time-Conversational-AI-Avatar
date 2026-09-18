@@ -28,6 +28,39 @@ The manifest still lists all 15. It records the *intended* subset;
 substitute was selected — backfilling to a round number would hide the attrition
 rather than report it.
 
+### `Radio` is defective — do not use it
+
+It rebuilt without error and must still be excluded. Its 4K source returned only
+**10.84 s of audio against a 772-frame video**, so every system silently truncated
+to about 268 frames. Nothing in the build reports this: the video is full length,
+the file sizes look ordinary, and only a frame-count check against the audio
+duration catches it.
+
+The cause is the section fetch — `--download-sections` on that 4K source returned
+a short audio stream. Any rebuild should verify **audio duration against frame
+count**, not merely that both exist.
+
+## The evaluation subset — 6 identities
+
+The benchmark uses six of the fourteen, balanced 3 WDA / 3 WRA:
+
+    AdamSchiff  AnnWagner  AdamSmith  AustinScott  AmyKlobuchar  CoryGardner
+
+`CoryGardner` replaced `Radio`. Six was chosen to keep 6 systems × 6 identities ×
+2 conditions = 72 generations inside the compute budget; the other eight clips are
+built and available if a reviewer wants the subset widened.
+
+**Articulation varies enormously across these speakers** — ground-truth
+open-mouth fraction ranges from 0.089 (`AustinScott`) to 0.817 (`AmyKlobuchar`).
+That is not noise to be averaged away: leakage scales with it (Spearman +0.642,
+p=0.00002, n=36), so any leakage figure must be normalised per identity. See
+`benchmark/README.md`.
+
+**These clips are too short to train a person-specific model.** They are 30.88 s,
+against the 247 s the redwan model trained on. The annotated ranges are longer —
+50 s to 343 s depending on identity — so longer training clips could be cut, but
+`AustinScott` has only 50 s in total and cannot support it at all.
+
 ## Rebuilding
 
 ```bash

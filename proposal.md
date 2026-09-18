@@ -1,191 +1,300 @@
 # Research Proposal — Evaluation Integrity in Audio-Driven Talking-Head Generation
 
 **Author:** Sahil al Farib
-**Date:** 13 September 2026
+**Date:** 13 September 2026 · **revised 18 September 2026**
 **Target venue:** IEEE Transactions on Multimedia (Q1) · fallback: IEEE TCSVT, Pattern Recognition
+
+> **Revision note.** The original thesis was that lip-sync score and leakage rank
+> systems *inversely* — that the metric **rewards** leakage. We designed the
+> experiment that could falsify that, ran it, and **it did** (§4.4). The claim is
+> withdrawn. What replaced it is narrower, better supported, and arrives with two
+> findings the original proposal did not anticipate (§4.5, §4.6).
 
 ---
 
 ## 1. Thesis
 
-> A widely-deployed talking-head baseline is **not audio-driven at all** — and the field's
-> standard metrics rank it as working. We trace the defect to a specific masking error,
-> repair it, and then show why no existing protocol could have caught it: lip-sync score and
-> expression leakage rank systems **inversely**, so the leakiest system scores best.
+> A widely-deployed talking-head baseline is **not audio-driven at all** — and the
+> field's standard metrics rank it as working. We trace the defect to a specific
+> masking error and repair it. We then show that the standard protocol could not
+> have caught it, for three independent reasons: it scores generated video **above
+> real human footage**, its leakage counter-measure **measures the test clip rather
+> than the system**, and both are unstable at the clip lengths everyone uses.
 
-The contribution is not the bug fix. It is the demonstration that a defect this severe
-survived for years in a widely-used model *because the community's evaluation protocol is
-blind to it, and in fact rewards it.*
+The contribution is not the bug fix. It is that a defect this severe survived in a
+widely-used model because the evaluation protocol cannot see it — and that the
+protocol's failure modes are specific, measurable and fixable.
 
 ---
 
 ## 2. How we found it
 
-We set out to deploy a lightweight talking-head model for Bangla. The avatar moved its
-mouth during silence.
+We set out to deploy a lightweight talking-head model for Bangla. The avatar moved
+its mouth during silence.
 
-The model receives the current video frame with the mouth blacked out, plus audio, and must
-paint the mouth back in. The masking code used OpenCV's `(x, y, w, h)` rectangle form where
-the point form was intended, so it blacked out rows 5–310 of a **320**-row crop. Rows
-310–319 — the chin and jaw — stayed visible in both training and inference.
+The model receives the current video frame with the mouth blacked out, plus audio,
+and must paint the mouth back in. The masking code used OpenCV's `(x, y, w, h)`
+rectangle form where the point form was intended, so it blacked out rows 5–310 of a
+**320**-row crop. Rows 310–319 — the chin and jaw — stayed visible in training and
+inference.
 
-Jaw drop predicts mouth opening almost perfectly. Holding audio and appearance reference
-constant, that ten-pixel strip accounted for **91% of all mouth motion**. The model had
-learned to read the chin rather than listen.
+Jaw drop predicts mouth opening almost perfectly. Holding audio and appearance
+reference constant, that ten-pixel strip accounted for **91% of all mouth motion**.
+The model had learned to read the chin rather than listen.
 
 Its lip-sync expert could not object: it was trained with `y = torch.ones(1)`
-unconditionally — positive pairs only, no negatives anywhere in the file — so it approved of
-everything and supplied no gradient.
+unconditionally — positive pairs only, no negatives anywhere in the file — so it
+approved of everything and supplied no gradient.
 
-**All four defects are confirmed present upstream at `ZiqiaoPeng/SyncTalk_2D @ 9e82dcc`,**
-with file:line references. They are not artefacts of our fork.
+**All four defects are confirmed present upstream at `ZiqiaoPeng/SyncTalk_2D @ 9e82dcc`.**
 
 | Defect | Location |
 |---|---|
 | SyncNet trained on positives only | `syncnet_328.py:106` |
 | Mask leaves the jaw exposed | `datasetsss_328.py:98`, `inference_328.py:115` |
-| Sync loss weighted 10x | `train_328.py:109` |
+| Sync loss weighted 10× | `train_328.py:109` |
 | Train/inference reference mismatch | `datasetsss_328.py:135` vs `inference_328.py:112-121` |
 
 ---
 
-## 3. The repair, measured
+## 3. The repair, measured — ⚠ PENDING RE-MEASUREMENT
 
-| | as-released | repaired | note |
-|---|---:|---:|---|
-| PSNR | 29.830 | **33.114** | repaired scored under a *stricter* mask |
-| SSIM | 0.8824 | **0.9114** | |
-| MAE | 0.0206 | **0.0144** | |
-| Leakage (mouth open on silence) | 0.422 | **0.000** | |
+| | as-released | repaired |
+|---|---:|---:|
+| PSNR | 29.830 | 33.114 |
+| SSIM | 0.8824 | 0.9114 |
+| MAE | 0.0206 | 0.0144 |
+| Leakage (mouth open on silence) | 0.422 | **0.000** |
 
-A control run isolates the mechanism. Re-running the as-released model with a fixed
-appearance reference instead of the shipped per-frame reference moves leakage from 0.427 to
-0.422 — a 1% difference. **The mask is the entire mechanism; the reference contributes
-nothing.** This independently reproduces an earlier probe that attributed 0.4% of mouth
-motion to the reference.
+**These reconstruction numbers are not yet publishable.** On 2026-09-18 we found
+that `MyDataset` enumerated every frame in the dataset directory and `train_328.py`
+passed it through unfiltered, so both models trained on frames 0–7713 — including
+the test split 6942–7713 on which the table above is measured. The appearance
+reference was drawn from the whole video as well.
+
+Fixed in `datasetsss_328.py` / `train_328.py`; training now takes `--manifest` and
+records the frame range in `train_config.json`. Matched 100-epoch reruns on the
+train split cost 14.6 h and are scheduled before submission.
+
+**The leakage row is unaffected.** It does not depend on which frames were trained
+on: the repaired mask removes the jaw pixels from the model's input, and §4.4 shows
+causally that those pixels are the mechanism. A model cannot copy what it cannot see.
+
+A control run isolates that mechanism. Re-running the as-released model with a fixed
+appearance reference instead of the shipped per-frame reference moves leakage from
+0.427 to 0.422 — 1%. **The mask is the entire mechanism; the reference contributes
+nothing.**
 
 ---
 
-## 4. The field-level finding
+## 4. The field-level findings
 
-Five systems, one 31-second Bangla test clip, one harness, ground-truth anchored.
+Two datasets, one scorer, ground-truth anchored on both. The scorer is
+`benchmark/` in the repository; it reproduces the September figures to within 0.04
+and is stable to 0.004 across three different GPUs.
 
-### 4.1 Lip-sync (standard metrics)
+### 4.1 HDTF — English, public, 6 identities
 
-| System | ckpt | T4 time | regime | offset | LSE-D ↓ | LSE-C ↑ |
-|---|---:|---:|---|---:|---:|---:|
-| Ground truth (real video) | — | — | real | 0 | 7.436 | 5.103 |
-| Wav2Lip (gan) | 436 MB | 9m06s | person-generic | −2 | 7.259 | **6.080** |
-| LatentSync 1.5 | 5072 MB | ~30m | person-generic | 0 | 7.259 | 5.128 |
-| MuseTalk v1.5 | 3400 MB | ~15m | person-generic | 0 | 7.860 | 4.910 |
-| SyncTalk_2D final_v2 (ours) | **49 MB** | **2m33s** | person-specific | 0 | 7.276 | 5.140 |
+Means over 6 identities. Ground truth is a scored row, not an assumption.
 
-### 4.2 Leakage and articulation (paired silent/real protocol)
+| System | LSE-D ↓ | LSE-C ↑ | leak raw | **leak norm** ↓ | artic ratio |
+|---|---:|---:|---:|---:|---:|
+| **Ground truth (real video)** | 7.416 | **8.009** | — | — | 1.000 |
+| wav2lip | **6.694** | **8.940** | 0.080 | **0.001** | 0.977 |
+| latentsync 1.5 | 6.697 | 8.816 | 0.240 | 0.082 | 0.643 |
+| wav2lip_gan | 6.929 | 8.752 | 0.241 | 0.299 | 1.034 |
+| musetalk v1.5 | 7.120 | 8.384 | 0.456 | **0.934** | 0.994 |
+| ip_lap | 7.067 | 7.883 | 0.097 | 0.003 | 0.339 |
+| musetalk v1.0 | 7.722 | 7.524 | 0.413 | 0.608 | 0.750 |
 
-| System | Leak ↓ | Articulation → 1 | distance from ideal |
+### 4.2 redwan — Bangla, 1 clip
+
+Rescored with the same code. SyncTalk rows carry the §3 contamination caveat.
+
+| System | LSE-D ↓ | LSE-C ↑ | leak raw | leak norm ↓ | artic ratio |
+|---|---:|---:|---:|---:|---:|
+| **Ground truth** | 7.392 | 5.135 | — | — | 1.000 |
+| wav2lip | 6.832 | **6.444** | — | — | 1.050 |
+| wav2lip_gan | 7.262 | 6.077 | 0.458 | 0.906 | 1.207 |
+| SyncTalk_2D legacy ⚠ | 7.317 | 5.164 | 0.409 | 0.809 | 1.045 |
+| SyncTalk_2D final_v2 ⚠ | 7.300 | 5.111 | **0.001** | **0.003** | 0.942 |
+| latentsync 1.5 | 7.288 | 5.088 | 0.359 | 0.710 | 0.790 |
+| musetalk v1.5 | 7.863 | 4.899 | 0.004 | 0.008 | 0.533 |
+| musetalk v1.0 | 7.720 | 4.665 | — | — | 0.221 |
+| ip_lap | 8.712 | 4.361 | — | — | 0.763 |
+
+**LSE values are not comparable across datasets** — real video scores 8.009 on
+HDTF and 5.135 on redwan. Only within-dataset ranks are meaningful, which is
+exactly why every table needs its own anchor row.
+
+### 4.3 Generated video outscores real video, significantly
+
+Paired over the 6 HDTF identities:
+
+| System | ΔLSE-C vs real | paired t | Wilcoxon |
 |---|---:|---:|---:|
-| Source video | — | 1.00 | — |
-| **SyncTalk_2D final_v2 (ours)** | **0.000** | **0.97** | **0.03** |
-| LatentSync 1.5 | 0.368 | 0.86 | 0.39 |
-| SyncTalk_2D as-released | 0.422 | 1.08 | 0.43 |
-| MuseTalk v1.5 | 0.005 | 0.55 | 0.45 |
-| Wav2Lip | 0.444 | 1.28 | 0.53 |
+| wav2lip | **+0.931** | **0.004** | **0.031** |
+| latentsync | **+0.807** | **0.020** | **0.031** |
+| wav2lip_gan | **+0.742** | **0.007** | **0.031** |
+| musetalk v1.5 | +0.375 | 0.232 | 0.312 |
+| ip_lap | −0.126 | 0.666 | 0.562 |
+| musetalk v1.0 | −0.485 | 0.187 | 0.312 |
 
-### 4.3 The inversion
+Three systems score above genuine human footage on the field's standard lip-sync
+metric, on both parametric and rank tests. Five of six beat it on LSE-D. Real video
+is the ceiling by construction; a metric that ranks synthesis above it is not
+measuring what its name claims.
 
-**Wav2Lip ranks 1st on LSE-C and last on leakage.** Fed pure digital silence, its mouth is
-open in 44% of frames against real speech's 49% — it is barely listening — and the standard
-metric calls it the winner.
+Wav2Lip and LatentSync both train with SyncNet supervision. They are optimising the
+scorer, and the scorer rewards them for it.
 
-The mechanism is explicable: a leaking model copies the ground-truth mouth, and the
-ground-truth mouth matches the audio by construction. **Leakage is a shortcut to a high sync
-score.** The metric cannot distinguish cheating from success.
+**Most published tables omit the real-video row.** Without it, 8.94 against 8.75
+reads as a fair contest rather than two systems both beating reality.
 
-This is not confined to one model. LatentSync, a 5 GB diffusion model from ByteDance, leaks
-at 0.368. Both it and Wav2Lip use SyncNet supervision during training — two of the four
-systems tested optimise directly against the metric that evaluates them.
+### 4.4 The falsified claim — mask dose-response
+
+Six arms, one architecture, one dataset, matched epochs, varying **only** how many
+jaw rows the mask leaves visible. This was designed to test causally whether the
+metric rewards leakage.
+
+| arm | jaw rows | train L1 ↓ | leak | LSE-C |
+|---|---:|---:|---:|---:|
+| jaw10 (= the shipped bug) | 10 | 0.0178 | 0.389 | 5.073 |
+| jaw8 | 8 | 0.0179 | 0.355 | 5.093 |
+| jaw6 | 6 | 0.0180 | 0.259 | 4.883 |
+| jaw4 | 4 | 0.0185 | 0.334 | 4.982 |
+| jaw2 | 2 | 0.0188 | 0.358 | 5.137 |
+| **jaw0 (repaired)** | 0 | 0.0202 | **0.080** | 4.925 |
+
+Three results:
+
+- **Training L1 rises monotonically** as jaw pixels are removed (0.0178 → 0.0202).
+  The model genuinely exploited those pixels; reconstruction degrades without them.
+- **Leak is a step, not a gradient.** Only full closure collapses it. Partial
+  repairs do nothing.
+- **LSE-C is flat** — 4.88 to 5.14, no trend, Spearman with jaw rows 0.143.
+
+The predicted monotonic rise did not occur. **The "sync metrics reward leakage"
+claim is withdrawn.** On HDTF at n=6 the rank correlation between LSE-C and leak is
+−0.543, p=0.266 — underpowered, indistinguishable from zero, and of the *opposite
+sign* to the original hypothesis. It does not return with more systems either.
+
+What survives is weaker and true: **the metric's sensitivity to leakage is too small
+to matter.** The cleanest and dirtiest systems differ by 0.556 (p=0.030), while the
+dirtiest — reproducing 93% of source mouth motion under digital silence — still
+outscores real video. The separation between listening and not-listening is smaller
+than the margin by which not-listening beats reality.
+
+### 4.5 New finding: leakage measures the test clip, not the system
+
+LipLeak feeds digital silence and counts mouth movement. It is a good idea with a
+confound we did not anticipate: **how much leakage you detect depends on how much
+the source speaker moves their own mouth.**
+
+Spearman between ground-truth articulation and measured leak, per system:
+
+    wav2lip_gan +0.94   latentsync +0.94   wav2lip +0.82
+    ip_lap      +0.79   musetalk_v15 +0.60  musetalk_v1 +0.60
+    POOLED (n=36): +0.642,  p = 0.00002
+
+Mechanically obvious in hindsight — leakage is copying the input mouth, so a speaker
+who barely opens theirs leaves nothing to copy. `AustinScott`'s ground-truth
+articulation is 0.089 and nearly every system scores ~0 leakage on him.
+
+**Consequence: raw LipLeak is not comparable across datasets, and a system evaluated
+on low-articulation speakers looks clean regardless of behaviour.** Dividing by
+source articulation fixes it. We propose reporting normalised leak, with raw
+alongside, and we report both here.
+
+### 4.6 New finding: single-clip leakage is uninformative
+
+Normalised leak, same checkpoint, two datasets:
+
+| System | redwan (1 clip) | HDTF (6 identities) |
+|---|---:|---:|
+| musetalk v1.5 | **0.008** | **0.934** |
+| latentsync | 0.710 | 0.082 |
+| wav2lip_gan | 0.906 | 0.299 |
+
+The ranking inverts completely. MuseTalk goes from cleanest to dirtiest.
+
+The honest reading is not that the datasets disagree. It is that **redwan is one
+clip**, and on HDTF the per-identity leak spread routinely exceeds its own mean. A
+leakage number from a single clip carries almost no information about a system —
+which also means the leakage column in our own September table, and in KeySync's,
+needs error bars before it can be read.
 
 ---
 
 ## 5. Supporting evidence that the protocol is unreliable
 
-- **LSE-C is unstable at clip length.** Four consecutive 7.7-second windows of the *same*
-  video from the *same* model scored 6.484, 5.659, 4.828, **2.167** — a 3x spread with
-  nothing varying but which eight seconds you look at.
-- **The reference implementation is inconsistent.** The script the field uses to compute LSE
-  contains `cv2.resize(img_input, (224,224))` with the literal comment
-  `#HARD CODED, CHANGE BEFORE RELEASE`. The original `syncnet_python` applies no such
-  resize. The two disagree, and published numbers do not state which was used.
-- **Audio muxing silently corrupts offsets.** AAC encoder priming introduces a 2-frame
-  (80 ms) apparent AV offset. Measured: identical video scored offset −2 via AAC, 0 via PCM.
-- **Most papers report no ground-truth anchor.** Real video here scores LSE-C 5.103. Without
-  that row, Wav2Lip's 6.080 reads as "better lip-sync than a real human."
-- **The standard expert under-scores non-English.** Real Bangla video scores LSE-C 5.103
-  where real English is typically reported at 6.8–8.2.
+- **LSE-C is unstable at clip length.** Four consecutive 7.7-second windows of the
+  *same* video from the *same* model scored 6.484, 5.659, 4.828, **2.167**.
+- **Leakage is unstable across identities** (§4.6), often with a standard deviation
+  exceeding its own mean.
+- **The reference implementation is inconsistent.** The script the field uses to
+  compute LSE contains `cv2.resize(img_input, (224,224))` with the literal comment
+  `#HARD CODED, CHANGE BEFORE RELEASE`; the original `syncnet_python` applies no
+  such resize. The two disagree and published numbers do not state which was used.
+- **Audio muxing silently corrupts offsets.** AAC priming introduces a 2-frame
+  (80 ms) apparent AV offset. And re-containering a file that already has audio can
+  move LSE-C by ~1.0 — we measured ground truth shifting 5.135 → 6.109 with
+  byte-identical audio, because several AVIs declare `avg_frame_rate 50/1` over 772
+  real frames and SyncNet re-extracts at `-r 25`.
+- **LSE cannot validate a harness.** SyncNet reads the score at its best offset, so
+  it is insensitive to alignment error by design — the correct choice for tolerating
+  a fixed pipeline delay, and the reason it cannot detect one. Our own 2-frame
+  LatentSync misalignment moved LSE-C by 0.05, roughly 1%, while a geometric check
+  found it immediately.
+- **Most papers report no ground-truth anchor** (§4.3).
+- **The standard expert under-scores non-English.** Real Bangla video scores LSE-C
+  5.135 where real English measures 8.009 on the same scorer.
 
 ---
 
 ## 6. Proposed contributions
 
-1. **A defect audit** of a widely-used baseline, with file:line evidence and a quantified
-   causal mechanism (91% of mouth motion from a ten-pixel strip).
-2. **Evidence that sync metrics reward leakage** — correlational across systems and, pending
-   §7.1, causal within one architecture.
-3. **A paired evaluation protocol** (Leak + Articulation) constructed so that degenerate
-   solutions cannot pass: a frozen mouth fails on articulation, a copying model fails on
-   leak, an over-animating model fails on articulation. Only genuine audio-dependence
-   satisfies both.
-4. **A universal Bangla SyncNet** — a multi-speaker lip-sync expert that no system in the
-   comparison trained against, released as an independent instrument.
-5. **A Bangla corpus** — 2.78 h, 24 speakers, 28 videos, quality-filtered and manifested.
-6. **A reproducibility artifact** — frozen splits, pinned environments, one-command
-   evaluation, and ten documented corrections that make published numbers comparable.
+1. **A defect audit** of a widely-used baseline, with file:line evidence and a
+   quantified causal mechanism (91% of mouth motion from a ten-pixel strip).
+2. **Evidence that the standard metric ranks synthesis above reality** — three
+   systems, significant, on a public benchmark, with the anchor row that makes it
+   visible.
+3. **A confound in the leakage metric, and its correction** (§4.5). LipLeak as
+   published measures the test clip as much as the system; normalising by source
+   articulation is a one-line fix with a strong effect.
+4. **A paired protocol** (normalised Leak + Articulation) constructed so degenerate
+   solutions cannot pass: a frozen mouth fails articulation, a copying model fails
+   leak, an over-animating model fails articulation.
+5. **A reproducibility artifact** — frozen splits, pinned environments, a validated
+   open scorer, and the documented corrections that make published numbers
+   comparable, including a negative result (§4.4) reported in full.
+6. **A Bangla corpus** — 2.78 h, 24 speakers, 28 videos, quality-filtered and
+   manifested. *Conditional on provenance; see §8.*
+
+*Dropped from the original list: the universal Bangla SyncNet. A better-trained
+SyncNet would share the structural insensitivity described in §4.4, so it would not
+answer the question the paper asks.*
 
 ---
 
 ## 7. Work remaining
 
-### 7.1 The decisive experiment — mask dose-response *(highest priority)*
+| | status |
+|---|---|
+| §7.1 mask dose-response | ✅ **done — falsified the hypothesis (§4.4)** |
+| §7.3 scale the comparison | ✅ done — 7 systems redwan, 6 HDTF, one scorer |
+| §7.4 second dataset (HDTF) | ✅ done — 6 identities, frozen manifest |
+| §7.5 universal Bangla SyncNet | ⬛ dropped, see §6 |
+| **§7.0 retrain on the train split** | ⛔ **blocking — 14.6 h, see §3** |
+| §7.2 human study | ⏳ not started — **critical path** |
+| §7.6 reconstruction metrics | ⏳ PSNR/SSIM/LPIPS/FID, lossless reruns |
+| §7.7 viseme head | ⏳ gated on Bangla phoneme alignment quality |
+| §7.8 speed on RTX 3050 | ⏳ the consumer-hardware claim is ours to prove |
 
-Current evidence for the inversion is correlational across four systems with different
-architectures, training data and objectives. We own the confound-free version: **the mask is
-a continuous dial.**
-
-Train one architecture, one dataset, matched epochs, varying only the number of jaw rows
-exposed (10 → 8 → 6 → 4 → 2 → 0). If LSE-C rises monotonically with leakage, we demonstrate
-**causally, within a single architecture**, that the standard metric rewards leakage.
-
-Six arms run concurrently on one A100 (the model needs 4 GB of 80). Approx. 10–15 units.
-
-**Run this first.** If the curve is flat, the causal claim dies and we revert to the
-correlational one — and we want that answer in week one, not week six.
-
-### 7.2 Human study *(gates the whole paper)*
-
-≥15 native Bangla speakers, blind, randomised. Rate lip-sync and naturalness. Correlate MOS
-against LSE-C and against the proposed protocol. **If the proposed metric tracks human
-judgment better, that justifies it; if not, we do not propose it.** No compute cost; longest
-calendar lead time; start immediately.
-
-### 7.3 Scale the comparison
-
-Add VideoReTalking, IP-LAP, TalkLip (all lightweight, all T4-feasible). Target 7–8 systems,
-then report a rank correlation with a p-value rather than an observation.
-
-### 7.4 Second dataset
-
-HDTF test split — English, public, standard. Demonstrates the effects are not Bangla-specific
-and answers the "why not a public benchmark" objection.
-
-### 7.5 Universal Bangla SyncNet
-
-Corpus built, preprocessing complete. ~40 units on A100. Acceptance test: the offset curve
-must peak at 0 **on held-out speakers**, not merely on training voices.
-
-### 7.6 Reconstruction metrics
-
-PSNR/SSIM/LPIPS/FID. Requires lossless reruns — Wav2Lip and MuseTalk both re-encode
-internally before their frames are reachable.
+**§7.2 gates the paper.** ≥15 native Bangla speakers, blind, randomised, rating
+lip-sync and naturalness; MOS correlated against LSE-C and against the proposed
+protocol. **If the proposed metric tracks human judgment better, that justifies it;
+if not, we do not propose it.** No compute cost, longest lead time, not started.
 
 ---
 
@@ -193,13 +302,13 @@ internally before their frames are reachable.
 
 | Risk | Response |
 |---|---|
-| **"You propose a metric your own system wins."** Serious — can sink the paper on its own. | (a) Justify by human correlation, never by ranking. (b) Our own as-released model scores 0.43 on it, worse than LatentSync — the metric indicts our earlier work, and that row goes in the main table. (c) Pre-register the threshold and report a sweep. |
-| **"Two systems is not an anti-correlation."** | §7.1 (causal, confound-free) plus §7.3 (n=8 with statistics). |
-| **"Wav2Lip trained on that SyncNet, so obviously."** | That is the point, stated first — and quantified: 2 of 4 systems tested use SyncNet supervision. |
-| **KeySync (arXiv 2505.00497) reached the same masking conclusion independently.** | Cite as corroboration, not competition. They design a new model; we audit a deployed one and show *why the metrics let it survive*. Adopt their LipLeak framing with credit. |
-| **Corpus provenance.** `sources.csv` has `source` / `licence` / `consent` empty for all 38 videos; footage arrived as third-party archives. | **Unresolved and blocking.** The LRS3/VoxCeleb release model requires publishing video IDs so others can rebuild — impossible without source URLs. Action item this week. |
-| **Epoch confound in the before/after.** Rung 0 is epoch 19; repaired is epoch 59. | Matched 100-epoch runs planned. The mechanism control (§3) already argues the leak is structural rather than a symptom of undertraining. |
-| Person-specific vs person-generic asymmetry. | Declared in the results table, not a footnote. |
+| **"You propose a metric your own system wins."** | (a) Justify by human correlation, never by ranking. (b) Our own as-released model is in the main table and scores badly on it. (c) Our headline reconstruction numbers were contaminated and we found and reported it ourselves (§3). |
+| **"Your central claim changed."** | Yes — we designed the experiment that could kill it, ran it, and it did (§4.4). The negative result is in the paper, with the table. This is a strength, and it is why §4.5 and §4.6 are trustworthy. |
+| **"Wav2Lip trained on that SyncNet, so obviously."** | Stated first, and quantified: 2 of 6 systems use SyncNet supervision — yet **four** beat real video on LSE-C, so training-against-the-metric is not the whole explanation. |
+| **Leakage instability cuts both ways.** Our own 0.001 for final_v2 is a single clip (§4.6). | Acknowledged in the table. Mitigated by the §4.4 causal argument, which does not depend on clip count: the repaired model cannot leak jaw pixels it cannot see. Cross-speaker confirmation on 2–3 Bangla corpus speakers is the honest next step. |
+| **KeySync (arXiv 2505.00497) reached the masking conclusion independently.** | Cite as corroboration. They design a new model; we audit a deployed one, and §4.5 shows their leakage metric needs a normalisation they do not apply. |
+| **Corpus provenance.** `sources.csv` has `source`/`licence`/`consent` empty for all 38 videos. | **Unresolved and blocking for release.** The LRS3/VoxCeleb model requires publishing video IDs so others can rebuild — impossible without source URLs. If unrecoverable, contribution 6 is withdrawn. |
+| **Person-specific vs person-generic asymmetry.** | Declared in the results table, not a footnote. SyncTalk_2D is excluded from the HDTF table rather than trained on 50 s of footage to manufacture a row. |
 
 ---
 
@@ -207,46 +316,57 @@ internally before their frames are reachable.
 
 | Item | Compute | Calendar |
 |---|---|---|
-| §7.1 dose-response | 10–15 units | 1 week |
-| §7.2 human study | 0 | 4–6 weeks *(start now)* |
-| §7.3 three more systems | ~5 units | 1 week |
-| §7.4 HDTF | ~10 units | 1 week |
-| §7.5 universal SyncNet | ~40 units | 1 week |
-| §7.6 reconstruction metrics | ~5 units | 3 days |
-| **Total** | **~75 of ~90 units remaining** | **~8 weeks to submission** |
+| Retrain on the train split (§7.0) | ~15 units | 2 days |
+| Human study (§7.2) | 0 | 4–6 weeks *(start now)* |
+| Reconstruction metrics (§7.6) | ~5 units | 3 days |
+| Viseme head (§7.7) | ~25 units | 1–2 weeks |
+| Speed on RTX 3050 (§7.8) | 0 | 1 day |
+| **Total** | **~45 units** | **~6 weeks to submission** |
 
-The human study is the critical path. Everything else can be bought with compute; fifteen
-people's calendars cannot.
+Spent so far: the dose-response, HDTF collection, six systems × two datasets, and
+the rescoring. The human study remains the critical path — everything else can be
+bought with compute; fifteen people's calendars cannot.
 
 ---
 
 ## 10. Requests
 
-1. **Confirm the reframing.** This moves the paper from "Bangla dataset + benchmark"
-   (IEEE Access tier) to "evaluation integrity" (TMM tier), and makes our own system
-   supporting evidence rather than the headline. I believe it is the stronger paper, but I
-   would like your view before committing eight weeks.
-2. **A written ethics determination** for the corpus (broadcast footage, no per-speaker
-   consent, no media redistribution, published takedown route). Needed under either framing
+1. **Confirm the reframing holds after the negative result.** The original pitch was
+   "sync metrics reward leakage." That is falsified. The paper is now "the standard
+   protocol cannot see this class of failure, for three measurable reasons" —
+   supported by a significant result on public data (§4.3) and two new findings
+   (§4.5, §4.6). I believe it is still a TMM-tier paper and a more honest one, but
+   I would like your view before committing six weeks.
+2. **A written ethics determination** for the corpus. Needed under either framing
    and cannot be retrofitted after review.
-3. **Help recruiting** ≥15 native Bangla speakers for the human study.
+3. **Help recruiting** ≥15 native Bangla speakers.
 4. **Confirm APC coverage.** IEEE Access is $2,160 for 2026; TMM differs.
 
 ---
 
 ## Appendix — reproducibility and definitions
 
-All results reproduce from `MyDrive/FYDP/`: pinned environment lockfiles, a one-command
-setup script, all baseline weights, the frozen test clip, and a runbook notebook. Ten
-methodological corrections are documented there, including the PCM-vs-AAC requirement and
-the LSE implementation discrepancy.
+All results reproduce from `benchmark/` in this repository plus `MyDrive/FYDP/`:
+pinned lockfiles, a one-command setup script, baseline weights, frozen test clips,
+and the validation table that must pass before any new number is trusted.
 
-**Test split.** Frames 6942–7713 of `redwan` (772 frames, 25 fps, 1080×1080), per
-`evaluation/manifests/redwan_splits.json`.
+**Test splits.** redwan frames 6942–7713 (772 frames, 25 fps, 1080×1080) per
+`evaluation/manifests/redwan_splits.json`; HDTF per `hdtf/hdtf_test_manifest.json`,
+6 identities of 14 rebuilt from 15 selected, retrieved 2026-09-17.
 
-**Metric definition.** Aperture = (mean *y* of inner-lower-lip − mean *y* of inner-upper-lip)
-÷ face width, using this repository's `pfld_mobileone` landmark detector. "Mouth open" =
-aperture > 0.03, chosen from the source distribution (p10 0.004, median 0.029, max 0.126).
-KeySync uses MediaPipe MAR at threshold 0.25 — the same construction at a different scale.
-**These numbers are not interchangeable with theirs**, and any comparison must state both
-definitions.
+**Metric definition.** Aperture = (mean *y* of inner-lower-lip − mean *y* of
+inner-upper-lip) ÷ face width, using this repository's `pfld_mobileone` detector.
+"Mouth open" = aperture > 0.03, chosen from the source distribution (p10 0.004,
+median 0.029, max 0.126). KeySync uses MediaPipe MAR at threshold 0.25 — the same
+construction at a different scale. **These numbers are not interchangeable with
+theirs.**
+
+**Metric precision.** The 0.03 threshold sits at the *median* of the source
+distribution, where the most frames lie, so landmark noise flips them.
+Reproducibility is **±0.02** on the thresholded fraction; differences smaller than
+that mean nothing. We report `median_aperture` — continuous and stable — alongside.
+
+**Normalised leak** = leak ÷ that identity's ground-truth articulation, taken as the
+median over identities (§4.5). Aggregating ratios by the mean is unsafe here:
+`AustinScott`'s denominator of 0.089 alone moved MuseTalk v1.0's articulation ratio
+from 0.750 to 1.584.

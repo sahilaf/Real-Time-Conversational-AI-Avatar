@@ -1,184 +1,211 @@
 # Execution Roadmap
 
-**Order fixed 2026-09-17.** Human study runs last, on the final model, so its
-ratings apply to the version that ships rather than an intermediate one.
+**Order fixed 2026-09-17. Status updated 2026-09-18.**
 
-    1. HDTF data          →  2. Three baselines  →  3. Viseme head
-                          →  4. Full benchmark   →  5. Human study
+    1. HDTF data ✅  →  2. Baselines ✅  →  3. Viseme head  →  4. Full benchmark
+                                        →  5. Human study
 
-**One thing must start immediately, out of order:** the ethics determination and
-participant recruitment for Stage 5. Those are calendar, not work. If they only
-begin when Stage 4 ends, they add 4–6 weeks to the end of the project instead of
-overlapping with it. Everything else follows the order above.
+Stages 1 and 2 are **done**. Both datasets are scored by one validated scorer.
+Stage 3 is next, gated on a check that has not been run yet.
 
-**Budget: ~90 Colab units remaining. This plan spends ~65.**
+**One thing is still overdue, out of order:** the ethics determination and
+participant recruitment for Stage 5. Those are calendar, not work, and nothing
+about them has started. Every day they wait adds a day to the end of the project,
+because compute cannot shorten them.
 
----
-
-## Stage 1 — HDTF: collect and prepare
-
-**Why:** IEEE Access and TMM both reject evaluation on a private dataset with no
-public benchmark. HDTF is the field standard (15.8 h, English, 512p) and it is
-distributed the same way our corpus would be — a URL list plus crop metadata,
-not media.
-
-**Work**
-
-- [ ] Clone the HDTF repo, read `*_video_url.txt` and the crop annotations
-- [ ] `yt-dlp` the source videos; **expect attrition** — HDTF is 2021 and YouTube
-      videos disappear. Record how many resolve and report it.
-- [ ] Apply the published crop windows, resample to **25 fps**, extract audio at
-      16 kHz mono PCM
-- [ ] Select a **fixed test subset** — 10–15 identities, ~30 s each — and freeze
-      it as a manifest with checksums. Never re-pick it later.
-- [ ] Store prepared clips in `FYDP/hdtf/` with a README recording the retrieval
-      date and the attrition count
-
-**Gate:** a frozen HDTF test manifest that a third party could rebuild, plus a
-stated attrition figure.
-
-**Cost:** ~5 units (mostly download and CPU). **Calendar: 2–3 days.**
-
-**Risks:** attrition may be severe enough that the subset is small — report it
-rather than quietly substituting videos. Check HDTF's own terms before
-redistributing anything beyond the manifest.
+**A new blocker appeared on 2026-09-18** and sits ahead of Stage 3 — see
+*Stage 2b*.
 
 ---
 
-## Stage 2 — Three more baselines
+## Stage 1 — HDTF: collect and prepare ✅ DONE
 
-**Why:** five systems is an observation; eight supports a rank correlation with
-a p-value. These three are all lightweight and T4-feasible.
+Frozen as `hdtf/hdtf_test_manifest.json`, rebuildable by a third party from
+`select_subset.py` + `download_prep.py`.
 
-| system | notes |
+| | |
 |---|---|
-| **VideoReTalking** | SIGGRAPH Asia 2022, appears in nearly every comparison table |
-| **IP-LAP** | CVPR 2023, standard baseline in recent work |
-| **TalkLip** | has a published leakage number (0.66) to cross-check ours against |
+| Intended | 15 identities, one clip each, 30.88 s @ 25 fps @ 512×512 |
+| Rebuilt | **14** — `AllenWest` is now Private on YouTube |
+| Used for evaluation | **6** |
+| Retrieved | 2026-09-17 |
+
+`Radio` was dropped after the fact: its 4K source returned only 10.84 s of audio
+against a 772-frame video, and every system silently truncated to ~268 frames.
+`CoryGardner` replaced it. The evaluation subset is 3 WDA / 3 WRA:
+
+    AdamSchiff  AnnWagner  AdamSmith  AustinScott  AmyKlobuchar  CoryGardner
+
+**Report the retrieval date and the attrition count in the paper.** Anyone
+rebuilding later gets fewer clips.
+
+---
+
+## Stage 2 — Baselines ✅ DONE
+
+Scaled past the original plan: **six** systems on HDTF rather than three added to
+five, with every cell run by us through one harness.
+
+| | |
+|---|---|
+| HDTF | 6 systems × 6 identities × {real, silence} = **72 outputs**, all scored |
+| redwan | 9 real + 6 silence = **15**, rescored with the same code |
+| Systems | wav2lip, wav2lip_gan, musetalk_v1, musetalk_v15, latentsync, ip_lap |
+| Metrics | LSE-D, LSE-C, AV offset, leak, articulation, median aperture |
+
+VideoReTalking was dropped as too slow. TalkLip was not run — its published
+leakage number (0.66) remains an unused cross-check.
+
+**The scorer is `benchmark/` in this repo**, validated against the 2026-09-13
+figures and reproducing across three Colab machines to within 0.004 on LSE-D.
+The first version of it was lost with a dead Colab session; it lives in the
+repository now for that reason.
+
+### What Stage 2 actually found
+
+1. **Generated video beats real video, significantly.** Paired over 6 identities,
+   wav2lip (+0.931, p=0.004), latentsync (+0.807, p=0.020) and wav2lip_gan
+   (+0.742, p=0.007) all score above ground truth on LSE-C. Five of six beat it
+   on LSE-D. This is the redwan observation replicated on public data with
+   statistics.
+
+2. **Leakage is confounded with how much the source speaker moves.** Pooled
+   Spearman between ground-truth articulation and measured leak is **+0.642,
+   p=0.00002** (n=36). A system tested on a low-articulation speaker looks
+   leak-free regardless of its behaviour. Raw LipLeak is not comparable across
+   datasets; divide by source articulation.
+
+3. **Leakage rank reverses between datasets.** Normalised leak for musetalk_v15
+   is 0.008 on redwan and 0.934 on HDTF — best to worst, same checkpoint.
+   redwan is one clip; HDTF's per-identity spread routinely exceeds its own mean.
+   **A single-clip leakage number carries almost no information.**
+
+4. **LSE-C is not blind to leakage, but its sensitivity is too small to matter.**
+   The cleanest and dirtiest systems differ by 0.556 (p=0.030) — while the dirtiest,
+   copying 93% of source mouth motion, still outscores real video. Across six
+   systems the rank correlation is −0.543, p=0.266, indistinguishable from zero.
+   State it that way; "LSE-C is blind" overclaims.
+
+---
+
+## Stage 2b — Retrain on the train split ⛔ BLOCKING
+
+**Found 2026-09-18.** `MyDataset` enumerated every frame and `train_328.py`
+passed it through, so every SyncTalk_2D checkpoint trained on frames 0..7713 —
+including the test split 6942..7713 that every redwan number is measured on. The
+appearance reference was drawn from the whole video too.
+
+Fixed in `datasetsss_328.py` / `train_328.py` (`--manifest`), pushed to
+`evaluation-tooling`. `setup_colab.sh` clones that branch until it is merged.
+
+**Consequence:** every `final_v2` and legacy number in the current tables is
+measured on frames the model trained on, and is not comparable with the
+person-generic baselines, which have never seen the video. The **leakage** result
+is unaffected — it rests on the mask removing the jaw pixels, shown causally
+across the six ablation arms.
 
 **Work**
 
-- [ ] One isolated venv each — assume version conflicts, they are the norm here
-- [ ] Run each on **both** the redwan test split and the HDTF subset
-- [ ] Three conditions per system: reconstruction, cross-audio, **silent**
-- [ ] Archive weights and lockfiles to `FYDP/baselines/` as with the first four
+- [ ] Retrain `final_v2` and the as-released arm, 100 epochs, `--manifest`
+- [ ] Verify the log prints `Frames 0..6170 (6171 of 7714 usable)` before
+      committing the full run
+- [ ] Re-measure PSNR / SSIM / MAE / LSE / articulation from the clean models
+- [ ] Replace the affected rows in `proposal.md` §3 and §4
 
-**Gate:** eight systems scored on two datasets, all through the same harness.
-
-**Cost:** ~15 units. **Calendar: 3–5 days** — budget a day per system for
-environment problems, based on how the first four went.
-
-**Carry forward:** PCM-never-AAC before scoring; ground-truth anchor row on both
-datasets; record which LSE implementation was used.
+**Cost:** 4.4 min/epoch measured on an L4 → **7.3 h per model, 14.6 h total.**
+This is the run that was already planned; it now uses the fixed loader, so the
+fix costs nothing extra. Doing it later costs the 14.6 hours twice.
 
 ---
 
 ## Stage 3 — Viseme head
 
-**Why:** every measurement so far is **aperture** — how far open the mouth is.
-The project proposal claims correct Bangla *lip shape*, and nothing currently
-supports that. This is the first component that would make /a/ differ from /e/
-by construction.
+**Why:** everything measured so far is **aperture** — how far the mouth opens.
+The proposal claims correct Bangla *lip shape*, and nothing supports that yet.
+This is the first component that would make /a/ differ from /e/ by construction.
+
+**Check this before any design work.** The stage depends on Bangla ASR with
+usable phoneme alignment. If the alignment is poor the stage is unbuildable and
+the order needs revisiting.
 
 **Work**
 
-- [ ] Bangla ASR with phoneme-level alignment over the redwan training audio.
-      **Validate the alignment before building on it** — a misaligned phoneme
-      track would silently teach the wrong shapes.
-- [ ] Map phonemes to a Bangla viseme inventory. Group the pairs that matter:
-      aspirated/unaspirated (ক/খ, ত/থ, দ/ধ), retroflex/dental (ট/ত, ড/দ),
-      nasal vowels.
-- [ ] Auxiliary classification head on the generated mouth region, predicting
-      viseme class; cross-entropy alongside the existing losses.
+- [ ] **Gate:** run Bangla phoneme alignment over a few minutes of redwan audio
+      and inspect it by hand against the waveform, specifically on the pairs that
+      matter — aspirated/unaspirated (ক/খ, ত/থ, দ/ধ), retroflex/dental (ট/ত, ড/দ),
+      nasal vowels. If those collapse, no head can learn the distinction.
+- [ ] Map phonemes to a Bangla viseme inventory
+- [ ] Auxiliary classification head on the generated mouth region
 - [ ] Train with the head; **ablate it** — same recipe with the head off is the
-      only way to show it earns its place.
+      only way to show it earns its place
 
 **Gate:** the head improves viseme discriminability on held-out Bangla speech,
-with the ablation arm to prove the improvement is the head and not the extra
-training.
+with the ablation arm to prove the gain is the head and not the extra training.
 
-**Cost:** ~25 units (several runs plus the ablation). **Calendar: 1–2 weeks.**
-
-**Biggest risk in the plan.** It depends on a Bangla ASR with usable phoneme
-alignment, and that may not exist at sufficient quality. **Check this first** —
-before any design work — because if the alignment is poor the whole stage is
-unbuildable and the order needs revisiting.
+**Cost:** ~25 units. **Calendar: 1–2 weeks.** Biggest risk in the plan.
 
 ---
 
 ## Stage 4 — Full benchmark
 
-**Why:** the results table for both the FYDP and the journal.
+Much of this is done. What remains:
 
-**Work**
-
-- [ ] 8 systems × 2 datasets × 3 conditions (reconstruction / cross-audio / silent)
-- [ ] Metrics: LSE-D, LSE-C, **Leak**, **Articulation**, PSNR, SSIM, LPIPS, FID
-- [ ] Speed re-measured on the **RTX 3050** — not the T4. The consumer-hardware
-      claim is the paper's, and A100/T4 numbers must never stand in for it.
+- [ ] **PSNR / SSIM / LPIPS / FID** — needs lossless reruns; Wav2Lip and MuseTalk
+      re-encode internally before their frames are reachable
+- [ ] **Speed on the RTX 3050.** The consumer-hardware claim is the paper's, and
+      T4/A100/L4 numbers must never stand in for it
 - [ ] Per-8-second-segment scores as well as per-clip, since the human study
       correlates per segment
-- [ ] Spearman between LSE-C rank and Leak rank across all systems, with p-value
-- [ ] Final model = repaired + viseme head; keep as-released as the lower anchor
+- [ ] Add SyncTalk_2D's clean arms once Stage 2b lands
+- [ ] Report leak **normalised by source articulation**, with raw leak alongside
 
-**Gate:** every cell filled by a system actually run, with a ground-truth anchor
-row on both datasets.
-
-**Cost:** ~20 units. **Calendar: 1 week.**
+**Cost:** ~10 units remaining. **Calendar: 3–4 days.**
 
 ---
 
 ## Stage 5 — Human study
 
 Runs on the **final** model. Full design in
-[human_study_plan.md](human_study_plan.md) — two stages, 6-person pilot to
-validate the instrument, then ≥15 for the result.
+[human_study_plan.md](human_study_plan.md) — 6-person pilot, then ≥15.
 
-**Started in parallel from day one:**
+**Overdue, should have started on day one:**
 
 - [ ] Written ethics determination from the department
-- [ ] Recruit ≥15 native Bangla speakers — provisional commitments are enough
-      until stimuli exist
+- [ ] Recruit ≥15 native Bangla speakers — provisional commitments suffice until
+      stimuli exist
 
-**Done after Stage 4:**
+**After Stage 4:**
 
 - [ ] Cut 8-second segments from the final benchmark outputs
 - [ ] Pilot (6) → four instrument checks → fix → main study (≥15)
-- [ ] Correlate MOS against LSE-C and against Leak, per segment
+- [ ] Correlate MOS against LSE-C and against normalised leak, per segment
 
 **Cost:** 0 units. **Calendar: 4–6 weeks**, almost entirely recruitment.
 
 ---
 
-## Timeline
-
-| stage | units | calendar |
-|---|---:|---|
-| 1 HDTF | ~5 | 2–3 days |
-| 2 Baselines | ~15 | 3–5 days |
-| 3 Viseme head | ~25 | 1–2 weeks |
-| 4 Full benchmark | ~20 | 1 week |
-| 5 Human study | 0 | 4–6 weeks *(recruitment overlaps 1–4)* |
-| **Total** | **~65 of 90** | **~8–10 weeks** |
-
-Sequential, so the calendar is the **sum**, not the maximum — except recruitment
-and ethics, which overlap everything.
-
----
-
 ## Decision points
 
-**After Stage 1.** If HDTF attrition leaves fewer than ~8 usable identities, say
-so and consider a second public set rather than reporting a thin subset.
+**After Stage 1 — resolved.** 14 of 15 rebuilt, 6 used. Above the ~8 threshold
+that would have forced a second public set.
 
-**Before Stage 3.** If Bangla phoneme alignment is not good enough, the viseme
-head is unbuildable. Fall back to the human study as the sole evidence for lip
-shape, and move Stage 5 forward.
+**After Stage 2 — resolved, and not as predicted.** The roadmap said a near-zero
+Spearman between LSE-C and leak would confirm blindness at scale, and a strongly
+negative one would revive the "rewards leakage" claim. The measured value is
+**−0.543, p=0.266** at n=6: underpowered, indistinguishable from zero, and
+*negative* rather than positive — the opposite sign from "rewards leakage". That
+claim does not return. The defensible statement is the one in Stage 2, finding 4.
 
-**After Stage 4.** If Spearman between LSE-C and Leak is near zero across eight
-systems, that confirms the blindness finding at scale and it becomes the paper's
-headline. If it is strongly negative, the stronger "rewards leakage" claim
-returns — but only with eight systems, never with the five we have.
+**Before Stage 3 — open.** If Bangla phoneme alignment is not good enough, the
+viseme head is unbuildable. Fall back to the human study as the sole evidence for
+lip shape and move Stage 5 forward.
+
+**New — how much does SyncTalk_2D need to generalise?** Training it on 6 HDTF
+identities is not possible: `AustinScott` has 50 s of usable footage against the
+247 s redwan trained on, and three others have roughly half. At 7.3 h per
+identity, even the three viable ones cost 22 h. Prefer 2–3 speakers from the
+**Bangla corpus** — same cost, and it supports the claim the proposal actually
+makes.
 
 ---
 
@@ -187,15 +214,27 @@ returns — but only with eight systems, never with the five we have.
 Do not rediscover these:
 
 - **PCM-in-AVI before scoring, never AAC** — AAC priming adds a 2-frame offset
+- **But do not re-mux a file that already has audio.** Several redwan AVIs declare
+  `avg_frame_rate 50/1` over 772 real frames; re-containering those moved
+  ground-truth LSE-C from 5.135 to 6.109. Files declaring 25/1 were unaffected,
+  so the error hit six systems and spared two.
 - **Ground-truth anchor row**, every dataset, every table
-- **`--ref_frame` pinned to the train split** — the auto-pick can take an
-  appearance reference from inside the test split
-- **`--start_frame 6941`**, not 6942 — `img_idx` increments before the first read
-- **`train_config.json` beside every checkpoint** or the mask silently falls
-  back to legacy
-- **Normalise input loudness** — measured: RMS 1316 gives LSE-C 4.601 against
-  6.0–6.9 for louder speech. Fix in `StreamingFeatureExtractor.add()`.
-- Full list: `FYDP/benchmarks/20260913_redwan_test/README.md`
+- **Verify alignment per system, geometrically** — slide the output against the
+  source on the top 100 rows, sweep symmetrically. LSE reads at the best offset
+  and so cannot detect a harness misalignment.
+- **LatentSync pads at the START when chunked, at the END when not.** Re-measure
+  whenever the chunking changes.
+- **IP_LAP writes `[sketch|result]`** — crop the right half. The redwan archive
+  was stored uncropped and scored articulation 0.9935 instead of 0.3854.
+- **`--manifest` on every training run**, or the model trains on its own test set
+- **`--ref_frame` pinned to the train split**; **`--start_frame 6941`**, not 6942
+- **`train_config.json` beside every checkpoint** or the mask falls back to legacy
+- **Normalise input loudness** — RMS 1316 gives LSE-C 4.601 against 6.0–6.9 for
+  louder speech. Fix in `StreamingFeatureExtractor.add()`. Still open.
+- **Articulation reproduces to ±0.02.** The 0.03 threshold sits at the median of
+  the source distribution, where the most frames are. Report `median_aperture`
+  alongside; differences below 0.02 mean nothing.
+- Full lists: `benchmark/README.md`, `FYDP/benchmarks/20260913_redwan_test/README.md`
 
 ---
 
@@ -205,5 +244,7 @@ Do not rediscover these:
   leakage for the same structural reason the current one is. Parked.
 - **InsTaG / TalkingGaussian / SyncTalk NeRF.** Person-specific comparison class;
   belongs to a system paper, not this one.
-- **Sync-loss dose-response.** The no-sync version came out flat; the loss uses
-  our SyncNet while the score uses Oxford's, so it was never the Wav2Lip case.
+- **Sync-loss dose-response.** Came out flat; the loss uses our SyncNet while the
+  score uses Oxford's, so it was never the Wav2Lip case.
+- **SyncTalk_2D on the HDTF identities.** Not affordable and not what the
+  proposal claims. See the decision point above.
