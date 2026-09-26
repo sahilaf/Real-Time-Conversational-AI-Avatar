@@ -1,6 +1,6 @@
 # 🧠 Real-Time Conversational AI Avatar Pipeline
 
-A real-time, end-to-end conversational AI pipeline that lets users talk to an AI-powered avatar with **synchronized lip-sync video**. The system connects **Google Gemini 2.5 Flash** for voice AI, **LiveKit** for real-time media transport, and **SyncTalk_2D** for photorealistic lip-sync avatar rendering — all running in a browser-based frontend.
+A real-time, end-to-end conversational AI pipeline that lets users talk to an AI-powered avatar with **synchronized lip-sync video**. The system connects **Google Gemini 2.5 Flash** for voice AI, **LiveKit** for real-time media transport, and **Alapon**, our Bangla lip-sync avatar model built on SyncTalk_2D, for photorealistic avatar rendering — all running in a browser-based frontend.
 
 ![Gemini](https://img.shields.io/badge/Gemini-2.5%20Flash-8B5CF6?style=for-the-badge)
 ![LiveKit](https://img.shields.io/badge/LiveKit-Agents-EC4899?style=for-the-badge)
@@ -30,7 +30,7 @@ This project is a **Final Year Design Project (FYDP)** that creates a full real-
 2. **Audio streams** → via LiveKit to the Agent backend
 3. **Agent processes** → Gemini 2.5 Flash generates a voice response
 4. **Audio → Avatar** → Gemini's response audio is sent to the SyncTalk_2D server via WebSocket
-5. **Avatar renders** → SyncTalk_2D generates lip-synced video frames using a trained UNet model on GPU
+5. **Avatar renders** → the SyncTalk_2D server runs **Alapon**, our trained U-Net, to generate lip-synced video frames on GPU
 6. **Video + Audio** → streamed back to the browser in perfect sync via LiveKit
 7. **User sees & hears** → the avatar talking with synchronized lips
 
@@ -40,10 +40,10 @@ This project is a **Final Year Design Project (FYDP)** that creates a full real-
 
 Three terminals, in this order. (First-time setup is in [Getting Started](#-getting-started).)
 
-**1 — Avatar server** (conda env, needs the GPU):
+**1 — Avatar server** (conda env, needs the GPU). `checkpoint/alapon/` holds **Alapon**, the final model (formerly `final_v2`):
 
 ```bash
-cd SyncTalk_2D && conda activate synctalk && python avatar_server_ws.py --checkpoint checkpoint/final_v2/59.pth --dataset dataset/redwan --mode ave --port 5001
+cd SyncTalk_2D && conda activate synctalk && python avatar_server_ws.py --checkpoint checkpoint/alapon/59.pth --dataset dataset/redwan --mode ave --port 5001
 ```
 
 **2 — Agent** (venv):
@@ -65,7 +65,7 @@ Then open **http://localhost:5000** and click **Connect**.
 Generate a video from a WAV file — the quickest way to check the model itself:
 
 ```bash
-cd SyncTalk_2D && conda activate synctalk && python inference_328.py --name final_v2 --audio_path demo/talk_hb.wav --asr ave
+cd SyncTalk_2D && conda activate synctalk && python inference_328.py --name alapon --audio_path demo/talk_hb.wav --asr ave
 ```
 
 Output lands in `SyncTalk_2D/result/`. Audio must be mono WAV; convert with
@@ -125,17 +125,25 @@ Fydp_v2/
 │   ├── idle_cache/                     # Cached idle animation frames
 │   └── README.md                       # SyncTalk_2D setup instructions
 │
-├── research/                           # 📐 Research track (local-only, gitignored)
-│   ├── PLAN.md                         # The single research plan (thesis, contributions, constraints)
-│   ├── CHECKLIST.md                    # Step-by-step execution checklist
-│   └── env/                            # Frozen dependency versions
+├── benchmark/                          # 📏 Cross-system scorer (LSE, leakage, articulation)
+│   └── README.md                       #   validation table, alignment offsets, known traps
+│
+├── hdtf/                               # 🎞️ Frozen HDTF test subset (manifest + rebuild scripts)
+│
+├── docs/                               # 📚 Documentation, split by audience
+│   ├── fydp/                           #   the system: defence pitch and verification checklist
+│   └── research/                       #   the paper: proposal, roadmap, human study plan
+│
+├── research/                           # 🔒 Local research workspace (gitignored)
+│                                       #   corpus, frozen envs, logs, private planning notes
 │
 └── README.md                           # This file
 ```
 
-> **Research track:** work toward the Bangla talking-head model is planned in
-> [`research/PLAN.md`](research/PLAN.md) and executed via
-> [`research/CHECKLIST.md`](research/CHECKLIST.md). Both are gitignored (local only).
+> **Documentation:** the FYDP pitch and the research paper live in separate tracks
+> under [`docs/`](docs/README.md) — [`docs/fydp/`](docs/fydp/) for the system and
+> [`docs/research/`](docs/research/) for the paper. `research/` at the root is a
+> local-only workspace and is not published.
 
 ---
 
@@ -433,7 +441,7 @@ back to the server VAD.
 ### SyncTalk_2D Server Options
 
 ```bash
-python avatar_server_ws.py --checkpoint checkpoint/final_v2/59.pth --dataset dataset/redwan --mode ave --port 5001
+python avatar_server_ws.py --checkpoint checkpoint/alapon/59.pth --dataset dataset/redwan --mode ave --port 5001
 ```
 
 `--out_size` sets the longest side of streamed frames (default 720, `0` for

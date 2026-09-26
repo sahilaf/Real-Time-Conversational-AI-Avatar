@@ -1,4 +1,4 @@
-# Redwan — the first real-time Bangla AI avatar
+# Alapon — the first real-time Bangla AI avatar
 
 **Pitch narrative for the FYDP defence.**
 
@@ -29,7 +29,7 @@ Everyone compares lip-sync systems by who scores highest.
 | | lip-sync score | |
 |---|---:|---|
 | **A real person, actually speaking** | **5.135** | *the target* |
-| **Redwan (ours)** | **5.111** | **0.5% away** ✅ |
+| **Alapon (ours)** | **5.111** | **0.5% away** ✅ |
 | LatentSync 1.5 (5 GB) | 5.088 | 0.9% away |
 | MuseTalk v1.5 (3.4 GB) | 4.899 | 4.6% away |
 | IP-LAP | 4.361 | 15% away |
@@ -55,7 +55,7 @@ stops being *who scores highest* and becomes **who lands closest to real.**
 
 The honest read: LatentSync matches our quality. Here is the bill.
 
-| | **Redwan** | LatentSync 1.5 | MuseTalk v1.5 | Wav2Lip |
+| | **Alapon** | LatentSync 1.5 | MuseTalk v1.5 | Wav2Lip |
 |---|---:|---:|---:|---:|
 | **Model size** | **49 MB** | 5,072 MB | 3,400 MB | 436 MB |
 | | **1×** | **104× larger** | 69× | 9× |
@@ -68,11 +68,11 @@ Two rows deserve a sentence each.
 
 **Mouth movement (1.00 = like a real person).** MuseTalk scores respectably while
 opening its mouth **half as much as a human**. It avoids mistakes by barely moving.
-Ours moves **94% as much as real video**.
+Alapon moves **94% as much as real video**.
 
 **Copied, not generated.** Feed the model pure digital silence alongside a real
 video. Anything the mouth does now is copied from the input — not generated from
-audio. LatentSync: **0.359**. Ours: **0.001**.
+audio. LatentSync: **0.359**. Alapon: **0.001**.
 
 > **"Three hundred and fifty times less. Their quality is partly borrowed. Ours
 > isn't."**
@@ -102,7 +102,7 @@ Not on a cluster. On a laptop, measured on the machine in this room.
 
 Size is not a spec. It decides where the product can exist.
 
-| | **49 MB (ours)** | **5 GB (theirs)** |
+| | **49 MB (Alapon)** | **5 GB (theirs)** |
 |---|---|---|
 | Hardware | Laptop you already own | Datacentre GPU |
 | Deployment | On-premise, offline | Cloud only |
@@ -110,14 +110,14 @@ Size is not a spec. It decides where the product can exist.
 | Connectivity | Works without it | Constant uplink |
 | Data | Never leaves the building | Sent to a third party |
 
-**A cloud avatar bills for every minute of every conversation, forever. Ours runs
+**A cloud avatar bills for every minute of every conversation, forever. Alapon runs
 on a machine you buy once.**
 
 And the places that need this most — village schools, district offices, rural
 clinics — have unreliable internet and no GPU budget. A 5 GB cloud model cannot be
 deployed there at any price.
 
-> **"A five-gigabyte model can't go to a village school. Ours can run on the
+> **"A five-gigabyte model can't go to a village school. Alapon can run on the
 > machine that's already sitting there."**
 
 **Adding a new face:** ~4 minutes of video, ~7 hours of training, and the output is
@@ -163,7 +163,8 @@ standard public English benchmark. Same code, same harness, every single cell.
 
 - **78 measurements** across 6 speakers and 6 systems, with and without audio
 - **Real video scored as a system** on both datasets — the row the field omits
-- **Reproducible to 0.004** across three different GPUs, so the results belong to
+- **Reproducible** — the scorer matches the original run to within 0.04 and gives
+  the same answer on two different GPUs to within 0.004, so the results belong to
   the method and not the hardware
 - **A Bangla corpus we built** — 2.78 hours, 24 speakers, 28 videos
 - **A human study designed** — native Bangla speakers, blind, randomised — next to
@@ -182,7 +183,7 @@ Say these before anyone asks. It costs nothing and buys everything.
   learn a new one. Not one-shot, and we don't claim it is.
 - **We measure how far the mouth opens, not its shape.** Right amount, right time —
   yes. /a/ visibly distinct from /e/ — not yet. That's the next component.
-- **The conversation intelligence is Gemini's.** Ours is the real-time Bangla avatar
+- **The conversation intelligence is Gemini's.** Alapon is the real-time Bangla avatar
   layer, and every number above measures that layer.
 - **Formal evaluation is on one Bangla speaker.** More speakers is the honest next
   step, and we know it.
@@ -205,9 +206,9 @@ about what people actually perceive.
    Bangla. *(20s)*
 2. **Demo.** Let it run. *(60s)*
 3. **The broken ruler.** We scored real human video: 5.135. Wav2Lip scores 6.444 —
-   25% better than a human, which is impossible. We land at 5.111, half a percent
+   25% better than a human, which is impossible. Alapon lands at 5.111, half a percent
    from real. *(40s)*
-4. **The cost.** LatentSync needs 5 GB to reach where we get with 49 MB. Ours runs
+4. **The cost.** LatentSync needs 5 GB to reach where Alapon gets with 49 MB. It runs
    at 30 fps on this laptop using 0.3 GB of video memory. *(30s)*
 5. **Why it matters.** That's the difference between needing a datacentre and
    running in a village school. *(20s)*

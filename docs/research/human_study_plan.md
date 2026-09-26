@@ -61,11 +61,11 @@ stop being blind.
 |---|---:|---|
 | Real redwan video | 2 | **upper anchor** |
 | SyncTalk_2D as-released (rung 0) | 2 | **lower anchor** — leaks 0.42 |
-| SyncTalk_2D `final_v2` | 3 | the system |
+| Alapon (SyncTalk_2D, repaired) | 3 | the system |
 | Wav2Lip | 2 | high LSE-C, high leak |
 | LatentSync 1.5 | 2 | diffusion |
 | MuseTalk v1.5 | 2 | low leak, under-articulated |
-| `final_v2` on **unseen** Bangla audio | 3 | the FYDP question |
+| Alapon on **unseen** Bangla audio | 3 | the FYDP question |
 | **silent-audio clips** (4 systems) | 4 | the leakage question |
 | *repeats of 3 earlier clips* | *(+3)* | self-consistency check |
 
@@ -183,7 +183,7 @@ Three outcomes, all publishable:
 
 ### FYDP analysis, separately
 
-Mean MOS(lip-sync) for `final_v2` on unseen Bangla audio, against the real-video
+Mean MOS(lip-sync) for Alapon on unseen Bangla audio, against the real-video
 anchor. Plus a thematic read of the free-text responses for viseme-specific
 complaints — that is the evidence for "matches lip shape", which no number
 currently supports.

@@ -57,7 +57,8 @@ VideoReTalking was dropped as too slow. TalkLip was not run — its published
 leakage number (0.66) remains an unused cross-check.
 
 **The scorer is `benchmark/` in this repo**, validated against the 2026-09-13
-figures and reproducing across three Colab machines to within 0.004 on LSE-D.
+figures to within 0.04 on LSE-D, and giving the same result on two Colab GPUs
+(A100, L4) to within 0.004.
 The first version of it was lost with a dead Colab session; it lives in the
 repository now for that reason.
 
@@ -98,7 +99,7 @@ appearance reference was drawn from the whole video too.
 Fixed in `datasetsss_328.py` / `train_328.py` (`--manifest`), pushed to
 `evaluation-tooling`. `setup_colab.sh` clones that branch until it is merged.
 
-**Consequence:** every `final_v2` and legacy number in the current tables is
+**Consequence:** every Alapon (`final_v2`) and legacy number in the current tables is
 measured on frames the model trained on, and is not comparable with the
 person-generic baselines, which have never seen the video. The **leakage** result
 is unaffected — it rests on the mask removing the jaw pixels, shown causally
@@ -106,7 +107,7 @@ across the six ablation arms.
 
 **Work**
 
-- [ ] Retrain `final_v2` and the as-released arm, 100 epochs, `--manifest`
+- [ ] Retrain Alapon and the as-released arm, 100 epochs, `--manifest`
 - [ ] Verify the log prints `Frames 0..6170 (6171 of 7714 usable)` before
       committing the full run
 - [ ] Re-measure PSNR / SSIM / MAE / LSE / articulation from the clean models

@@ -91,7 +91,7 @@ nothing.**
 
 Two datasets, one scorer, ground-truth anchored on both. The scorer is
 `benchmark/` in the repository; it reproduces the September figures to within 0.04
-and is stable to 0.004 across three different GPUs.
+and gives the same result on two different GPUs (A100, L4) to within 0.004.
 
 ### 4.1 HDTF — English, public, 6 identities
 
@@ -114,14 +114,14 @@ Rescored with the same code. SyncTalk rows carry the §3 contamination caveat.
 | System | LSE-D ↓ | LSE-C ↑ | leak raw | leak norm ↓ | artic ratio |
 |---|---:|---:|---:|---:|---:|
 | **Ground truth** | 7.392 | 5.135 | — | — | 1.000 |
-| wav2lip | 6.832 | **6.444** | — | — | 1.050 |
+| wav2lip | 6.832 | **6.444** | 0.008 | 0.015 | 1.050 |
 | wav2lip_gan | 7.262 | 6.077 | 0.458 | 0.906 | 1.207 |
 | SyncTalk_2D legacy ⚠ | 7.317 | 5.164 | 0.409 | 0.809 | 1.045 |
-| SyncTalk_2D final_v2 ⚠ | 7.300 | 5.111 | **0.001** | **0.003** | 0.942 |
+| Alapon (SyncTalk_2D, repaired) ⚠ | 7.300 | 5.111 | **0.001** | **0.003** | 0.942 |
 | latentsync 1.5 | 7.288 | 5.088 | 0.359 | 0.710 | 0.790 |
 | musetalk v1.5 | 7.863 | 4.899 | 0.004 | 0.008 | 0.533 |
-| musetalk v1.0 | 7.720 | 4.665 | — | — | 0.221 |
-| ip_lap | 8.712 | 4.361 | — | — | 0.763 |
+| musetalk v1.0 | 7.720 | 4.665 | 0.001 | 0.003 | 0.221 |
+| ip_lap | 8.712 | 4.361 | 0.202 | 0.399 | 0.763 |
 
 **LSE values are not comparable across datasets** — real video scores 8.009 on
 HDTF and 5.135 on redwan. Only within-dataset ranks are meaningful, which is
@@ -305,7 +305,7 @@ if not, we do not propose it.** No compute cost, longest lead time, not started.
 | **"You propose a metric your own system wins."** | (a) Justify by human correlation, never by ranking. (b) Our own as-released model is in the main table and scores badly on it. (c) Our headline reconstruction numbers were contaminated and we found and reported it ourselves (§3). |
 | **"Your central claim changed."** | Yes — we designed the experiment that could kill it, ran it, and it did (§4.4). The negative result is in the paper, with the table. This is a strength, and it is why §4.5 and §4.6 are trustworthy. |
 | **"Wav2Lip trained on that SyncNet, so obviously."** | Stated first, and quantified: 2 of 6 systems use SyncNet supervision — yet **four** beat real video on LSE-C, so training-against-the-metric is not the whole explanation. |
-| **Leakage instability cuts both ways.** Our own 0.001 for final_v2 is a single clip (§4.6). | Acknowledged in the table. Mitigated by the §4.4 causal argument, which does not depend on clip count: the repaired model cannot leak jaw pixels it cannot see. Cross-speaker confirmation on 2–3 Bangla corpus speakers is the honest next step. |
+| **Leakage instability cuts both ways.** Our own 0.001 for Alapon is a single clip (§4.6). | Acknowledged in the table. Mitigated by the §4.4 causal argument, which does not depend on clip count: the repaired model cannot leak jaw pixels it cannot see. Cross-speaker confirmation on 2–3 Bangla corpus speakers is the honest next step. |
 | **KeySync (arXiv 2505.00497) reached the masking conclusion independently.** | Cite as corroboration. They design a new model; we audit a deployed one, and §4.5 shows their leakage metric needs a normalisation they do not apply. |
 | **Corpus provenance.** `sources.csv` has `source`/`licence`/`consent` empty for all 38 videos. | **Unresolved and blocking for release.** The LRS3/VoxCeleb model requires publishing video IDs so others can rebuild — impossible without source URLs. If unrecoverable, contribution 6 is withdrawn. |
 | **Person-specific vs person-generic asymmetry.** | Declared in the results table, not a footnote. SyncTalk_2D is excluded from the HDTF table rather than trained on 50 s of footage to manufacture a row. |
