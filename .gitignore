@@ -3,9 +3,9 @@
 *.env
 !.env.example
 
-# ---- Local planning/research docs (kept local, not published) ----
-research/
-docs/
+# ---- Local research workspace (kept local, not published) ----
+# Corpus, envs, logs and private planning notes. Published docs live in docs/.
+/research/
 
 # ---- Large model weights (download separately; see README checkpoints link) ----
 *.pth
@@ -62,3 +62,11 @@ SyncTalk_2D/*.png
 # *.tar entry above would otherwise re-ignore the landmark checkpoint. 8 MB.
 !SyncTalk_2D/data_utils/scrfd_2.5g_kps.onnx
 !SyncTalk_2D/data_utils/checkpoint_epoch_335.pth.tar
+
+# generated evaluation media - rebuildable, never redistributed
+hdtf/raw/
+hdtf/clips/
+hdtf/meta/
+crossaudio/
+eval_clips/
+*.tar

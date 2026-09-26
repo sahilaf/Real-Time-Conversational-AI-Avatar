@@ -28,7 +28,7 @@ from torch.nn.functional import cosine_similarity
 from torch.utils.data import DataLoader
 
 from syncnet_328 import SyncNet_color
-from syncnet_corpus import CorpusDataset, split_speakers
+from syncnet_corpus import CorpusDataset, split_speakers, to_float
 
 
 def main():
@@ -45,6 +45,8 @@ def main():
     p.add_argument("--val_speakers", type=int, default=4)
     p.add_argument("--stride", type=int, default=8)
     p.add_argument("--cache_dir", default="")
+    p.add_argument("--crop_cache", default="",
+                   help="same pre-decoded cache the training run used")
     p.add_argument("--on_train_speakers", action="store_true",
                    help="score the TRAINING voices instead - for contrast only")
     a = p.parse_args()
@@ -64,7 +66,8 @@ def main():
     for off in offsets:
         ds = CorpusDataset(a.corpus, man, spk, a.asr, stride=a.stride,
                            neg_prob=0.0,          # true pairs only
-                           cache_dir=a.cache_dir or None, audio_offset=off)
+                           cache_dir=a.cache_dir or None, audio_offset=off,
+                           crop_cache=a.crop_cache or None)
         n = min(a.samples, len(ds))
         # a fixed stride subset, not a random one, so every offset is scored on
         # exactly the same frames and the curve compares like with like
@@ -73,7 +76,7 @@ def main():
         sims = []
         with torch.no_grad():
             for face, aud, _ in dl:
-                ae, fe = model(face.cuda(), aud.cuda())
+                ae, fe = model(to_float(face), aud.cuda())
                 sims += cosine_similarity(ae, fe).tolist()
         scores.append(float(np.mean(sims)))
         print(f"  offset {off:+3d}   mean similarity {scores[-1]:.4f}")

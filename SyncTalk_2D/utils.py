@@ -94,6 +94,13 @@ def apply_mouth_mask(img320, version=MASK_V2):
     out = img320.copy()
     if version == MASK_LEGACY:
         out[5:310, 5:315] = 0      # leaves rows 310-319 (the jaw) visible
+    elif isinstance(version, str) and version.startswith("jaw"):
+        # Ablation dial: "jawN" leaves the bottom N rows of jaw visible, so the
+        # leak can be varied continuously while nothing else changes. jaw10 is
+        # byte-identical to legacy and jaw0 to v2_no_jaw - assert that before
+        # trusting any arm, since the whole point is that the mask is the ONLY
+        # variable across runs.
+        out[5:320 - int(version[3:]), 5:315] = 0
     else:
         out[5:, 5:315] = 0         # jaw hidden
     return out
