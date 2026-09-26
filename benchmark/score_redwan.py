@@ -39,15 +39,22 @@ FILES = {
                                f'{R1}/videos_silence/latentsync15_SILENT.mp4'),
     'musetalk_v15':           (f'{R1}/videos_pcm/musetalk15.avi',
                                f'{R1}/videos_silence/musetalk15_SILENT.mp4'),
-    'synctalk2d_final_v2':    (f'{R1}/videos_pcm/synctalk2d_final_v2.avi',
+    # Alapon, the final model. The files on Drive, and the rows scored before the
+    # rename, still carry its old name, synctalk2d_final_v2.
+    'alapon':                 (f'{R1}/videos_pcm/synctalk2d_final_v2.avi',
                                f'{R1}/videos_silence/synctalk2d_final_v2_SILENT.mp4'),
     'synctalk2d_legacy_fix':  (f'{R1}/videos_silence/rung0_legacy_fixedref_real.mp4',
                                f'{R1}/videos_silence/rung0_legacy_fixedref_SILENT.mp4'),
     'synctalk2d_legacy_ship': (None,
                                f'{R1}/videos_silence/rung0_legacy_asshipped_SILENT.mp4'),
-    'wav2lip':                (f'{R2}/videos_redwan/wav2lip_nogan.avi', None),
-    'musetalk_v1':            (f'{R2}/videos_redwan/musetalk_v1.0.avi', None),
-    'ip_lap':                 (f'{R2}/videos_redwan/ip_lap_rightcrop.avi', None),
+    # Silence renders for these three were added on 2026-09-25, with the same
+    # commands as the HDTF batch (ip_lap cropped to the right half).
+    'wav2lip':                (f'{R2}/videos_redwan/wav2lip_nogan.avi',
+                               f'{R2}/videos_silence_redwan/wav2lip_nogan_SILENT.mp4'),
+    'musetalk_v1':            (f'{R2}/videos_redwan/musetalk_v1.0.avi',
+                               f'{R2}/videos_silence_redwan/musetalk_v1.0_SILENT.mp4'),
+    'ip_lap':                 (f'{R2}/videos_redwan/ip_lap_rightcrop.avi',
+                               f'{R2}/videos_silence_redwan/ip_lap_SILENT.mp4'),
 }
 
 
