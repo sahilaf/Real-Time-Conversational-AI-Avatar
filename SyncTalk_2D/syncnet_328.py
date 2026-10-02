@@ -9,11 +9,20 @@ from torch import optim
 from tqdm import tqdm
 import random
 import argparse
+import json
+from concurrent.futures import ThreadPoolExecutor
 
 
 
 class Dataset(object):
-    def __init__(self, dataset_dir, mode, split="all", val_ratio=0.1, neg_prob=0.5, min_neg_gap=5):
+    def __init__(self, dataset_dir, mode, split="all", val_ratio=0.1, neg_prob=0.5, min_neg_gap=5,
+                 indices=None, cache=False, cache_threads=8):
+        """indices: explicit frames for this split (from a manifest), instead
+        of the default contiguous last-10% validation split - which, on a
+        dataset with a held-out test stretch, would train on the test frames.
+
+        cache: crop every frame once into RAM; same crops as the uncached
+        path (shared code with datasetsss_328), no per-sample JPEG decode."""
 
         self.img_path_list = []
         self.lms_path_list = []
@@ -49,10 +58,25 @@ class Dataset(object):
             self.start, self.end = 0, n_total
         self.neg_prob = neg_prob
         self.min_neg_gap = min_neg_gap
+        self.indices = list(indices) if indices is not None else list(range(self.start, self.end))
+
+        self.crops = None
+        if cache:
+            from datasetsss_328 import MyDataset as _MD
+            import time
+            t0 = time.time()
+            self.crops = np.empty((len(self.indices), 320, 320, 3), dtype=np.uint8)
+            self.row = {idx: r for r, idx in enumerate(self.indices)}
+            load = lambda i: _MD._crop(cv2.imread(self.img_path_list[i]), _MD._load_lms(self.lms_path_list[i]))
+            with ThreadPoolExecutor(max(1, cache_threads)) as pool:
+                for r, crop in enumerate(pool.map(load, self.indices)):
+                    self.crops[r] = crop
+            print(f"SyncNet crop cache: {len(self.indices)} frames, "
+                  f"{self.crops.nbytes / 1e9:.2f} GB in {time.time() - t0:.0f}s")
 
     def __len__(self):
 
-        return self.end - self.start
+        return len(self.indices)
 
     def get_audio_features(self, features, index):
         
@@ -101,22 +125,23 @@ class Dataset(object):
         return img_real_T
 
     def __getitem__(self, i):
-        idx = self.start + i
-        img = cv2.imread(self.img_path_list[idx])
-        lms_path = self.lms_path_list[idx]
-
-        ex_int = random.randint(self.start, self.end - 1)
-        img_ex = cv2.imread(self.img_path_list[ex_int])
-        lms_path_ex = self.lms_path_list[ex_int]
-
-        img_real_T = self.process_img(img, lms_path, img_ex, lms_path_ex)
+        idx = self.indices[i]
+        if self.crops is not None:
+            img_real = self.crops[self.row[idx]]
+            img_real_T = torch.from_numpy(img_real.transpose(2,0,1).astype(np.float32) / 255.0)
+        else:
+            # process_img never used the second ("ex") frame it was handed, so
+            # it is no longer decoded; the crop itself is unchanged.
+            img = cv2.imread(self.img_path_list[idx])
+            img_real_T = self.process_img(img, self.lms_path_list[idx], None, None)
 
         # Contrastive sampling: 50% positive (matching audio), 50% negative
         # (audio from a temporally distant frame within the same split).
-        if random.random() < self.neg_prob and (self.end - self.start) > 2 * self.min_neg_gap:
-            wrong = random.randint(self.start, self.end - 1)
+        n = len(self.indices)
+        if random.random() < self.neg_prob and n > 2 * self.min_neg_gap:
+            wrong = self.indices[random.randint(0, n - 1)]
             while abs(wrong - idx) < self.min_neg_gap:
-                wrong = random.randint(self.start, self.end - 1)
+                wrong = self.indices[random.randint(0, n - 1)]
             audio_feat = self.get_audio_features(self.audio_feats, wrong)
             y = torch.zeros(1).float()
         else:
@@ -279,13 +304,41 @@ def evaluate(model, data_loader):
     mean = lambda xs: sum(xs) / len(xs) if xs else float("nan")
     return mean(losses), mean(pos_sims), mean(neg_sims)
 
+def atomic_save(obj, path):
+    """Save via a temp file + rename: a disconnect mid-write keeps the old file."""
+    tmp = path + ".tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+def manifest_indices(manifest_path):
+    """Train and val frame lists from an evaluation manifest. The test split
+    is in neither, so the expert never sees the frames the avatar is scored on."""
+    with open(manifest_path) as f:
+        splits = json.load(f)["splits"]
+    def frames(sp):
+        if "ranges" in sp:
+            return [i for s0, e0 in sp["ranges"] for i in range(int(s0), int(e0) + 1)]
+        return list(range(int(sp["start"]), int(sp["end"]) + 1))
+    return frames(splits["train"]), frames(splits["val"])
+
+
 def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4, lr=0.001,
-          amp=False, resume="", init=""):
+          amp=False, resume="", init="", manifest="", cache=False, log_every=25, eval_only=False):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    train_dataset = Dataset(dataset_dir, mode=mode, split="train")
-    val_dataset = Dataset(dataset_dir, mode=mode, split="val")
+    torch.backends.cudnn.benchmark = True      # fixed input sizes: pick fast kernels once
+    threads = max(1, (os.cpu_count() or 2) - 1)
+    if manifest:
+        tr_idx, va_idx = manifest_indices(manifest)
+        print(f"Manifest split: {len(tr_idx)} train, {len(va_idx)} val frames")
+    else:
+        tr_idx = va_idx = None
+    train_dataset = Dataset(dataset_dir, mode=mode, split="train", indices=tr_idx,
+                            cache=cache and not eval_only, cache_threads=threads)
+    val_dataset = Dataset(dataset_dir, mode=mode, split="val", indices=va_idx,
+                          cache=cache, cache_threads=threads)
     # persistent_workers keeps the workers alive across epochs. Without it
     # Windows re-spawns a full Python+torch process per worker every epoch,
     # which is slow and spikes RAM.
@@ -295,13 +348,15 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
     # passes 8. Running validation single-threaded there cost ~11 s an epoch,
     # which is ~55 minutes across a 300-epoch run.
     val_workers = num_workers // 2
+    pin = torch.cuda.is_available()
     train_data_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers,
+        num_workers=num_workers, pin_memory=pin,
+        prefetch_factor=(4 if num_workers > 0 else None),
         persistent_workers=(num_workers > 0))
     val_data_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=val_workers,
+        num_workers=val_workers, pin_memory=pin,
         persistent_workers=(val_workers > 0))
     model = SyncNet_color(mode).cuda()
     # --init warm-starts weights only (e.g. person fine-tune from the
@@ -309,6 +364,13 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
     if init:
         model.load_state_dict(torch.load(init, map_location="cuda"))
         print(f"Initialised weights from {init}.")
+    if eval_only:
+        # Score a checkpoint on this dataset's validation frames and stop -
+        # e.g. how well the previous recording's expert transfers.
+        val_loss, val_pos, val_neg = evaluate(model, val_data_loader)
+        print(f"EVAL {init or '(random init)'}: val {val_loss:.4f}  pos_sim {val_pos:.4f}  "
+              f"neg_sim {val_neg:.4f}  gap {val_pos - val_neg:.4f}")
+        return
     optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad],
                            lr=lr)
 
@@ -320,6 +382,10 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
     best_val_loss = float("inf")
     start_epoch = 0
     log_path = os.path.join(save_dir, "train_log.csv")
+    if resume == "auto":
+        auto = os.path.join(save_dir, "last.pth")
+        resume = auto if os.path.exists(auto) else ""
+        print(f"Resume: {'continuing from ' + auto if resume else 'no last.pth, starting fresh'}")
     if resume:
         ckpt = torch.load(resume, map_location="cuda")
         model.load_state_dict(ckpt["model"])
@@ -333,13 +399,13 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
         with open(log_path, "w") as f:
             f.write("epoch,train_loss,val_loss,val_pos_sim,val_neg_sim\n")
     for epoch in range(start_epoch, epochs):
-        epoch_losses = []
+        loss_sum, steps = None, 0                 # on the GPU; read every log_every steps
         with tqdm(total=len(train_dataset), desc=f'Epoch {epoch+1}/{epochs}', unit='img') as p:
             for batch in train_data_loader:
                 imgT, audioT, y = batch
-                imgT = imgT.cuda()
-                audioT = audioT.cuda()
-                y = y.cuda()
+                imgT = imgT.cuda(non_blocking=True)
+                audioT = audioT.cuda(non_blocking=True)
+                y = y.cuda(non_blocking=True)
                 optimizer.zero_grad()
                 with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                     audio_embedding, face_embedding = model(imgT, audioT)
@@ -348,11 +414,13 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
-                epoch_losses.append(loss.item())
-                p.set_postfix(**{'loss': f"{loss.item():.4f}",
-                                 'avg': f"{sum(epoch_losses)/len(epoch_losses):.4f}"})
+                l = loss.detach()
+                loss_sum = l if loss_sum is None else loss_sum + l
+                steps += 1
+                if steps % log_every == 0:
+                    p.set_postfix(loss=f"{l.item():.4f}", avg=f"{(loss_sum / steps).item():.4f}")
                 p.update(imgT.shape[0])
-        train_loss = sum(epoch_losses) / len(epoch_losses)
+        train_loss = (loss_sum / steps).item()
         val_loss, val_pos, val_neg = evaluate(model, val_data_loader)
         print(f"epoch {epoch+1}  train {train_loss:.4f}  val {val_loss:.4f}  "
               f"pos_sim {val_pos:.4f}  neg_sim {val_neg:.4f}  gap {val_pos - val_neg:.4f}")
@@ -360,17 +428,18 @@ def train(save_dir, dataset_dir, mode, epochs=100, batch_size=16, num_workers=4,
             f.write(f"{epoch+1},{train_loss:.6f},{val_loss:.6f},{val_pos:.6f},{val_neg:.6f}\n")
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), os.path.join(save_dir, "best_val.pth"))
+            atomic_save(model.state_dict(), os.path.join(save_dir, "best_val.pth"))
         if (epoch + 1) % 25 == 0:
-            torch.save(model.state_dict(), os.path.join(save_dir, str(epoch+1)+'.pth'))
+            atomic_save(model.state_dict(), os.path.join(save_dir, str(epoch+1)+'.pth'))
         # last.pth carries the full resume state. best_val.pth and the numbered
         # files stay plain state_dicts so eval_sync_328.py loads them unchanged.
-        torch.save({"epoch": epoch + 1,
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scaler": scaler.state_dict(),
-                    "best_val_loss": best_val_loss},
-                   os.path.join(save_dir, "last.pth"))
+        # Written last, so if it says epoch N everything up to N is on disk.
+        atomic_save({"epoch": epoch + 1,
+                     "model": model.state_dict(),
+                     "optimizer": optimizer.state_dict(),
+                     "scaler": scaler.state_dict(),
+                     "best_val_loss": best_val_loss},
+                    os.path.join(save_dir, "last.pth"))
 
 
 
@@ -387,10 +456,19 @@ if __name__ == "__main__":
     parser.add_argument('--amp', action='store_true',
                         help="Mixed precision. Big speedup on A100; changes numerics, so off by default.")
     parser.add_argument('--resume', default="", type=str,
-                        help="Path to a last.pth to continue an interrupted run.")
+                        help="Path to a last.pth to continue an interrupted run, or 'auto' "
+                             "for <save_dir>/last.pth when it exists.")
+    parser.add_argument('--manifest', default="", type=str,
+                        help="Train/val frames from an evaluation manifest; the test split is excluded.")
+    parser.add_argument('--cache', action='store_true',
+                        help="Crop frames once into RAM; same crops, no per-sample JPEG decode.")
+    parser.add_argument('--log_every', default=25, type=int)
+    parser.add_argument('--eval_only', action='store_true',
+                        help="Score --init on the validation frames and exit.")
     parser.add_argument('--init', default="", type=str,
                         help="Warm-start weights from a checkpoint (e.g. the universal Bangla SyncNet).")
     opt = parser.parse_args()
 
     train(opt.save_dir, opt.dataset_dir, opt.asr, opt.epochs, opt.batch_size, opt.num_workers, opt.lr,
-          amp=opt.amp, resume=opt.resume, init=opt.init)
+          amp=opt.amp, resume=opt.resume, init=opt.init, manifest=opt.manifest, cache=opt.cache,
+          log_every=opt.log_every, eval_only=opt.eval_only)

@@ -42,7 +42,15 @@ def get_args():
     parser.add_argument('--amp', action='store_true',
                         help="Mixed precision. Big speedup on A100; changes numerics, so off by default.")
     parser.add_argument('--resume', type=str, default="",
-                        help="Path to a last.pth to continue an interrupted run.")
+                        help="Path to a last.pth to continue an interrupted run, or 'auto' "
+                             "to continue from <save_dir>/last.pth when it exists.")
+    parser.add_argument('--cache', action='store_true',
+                        help="Crop every training frame once and keep the crops in RAM "
+                             "(~0.3 MB/frame). Pixel-identical samples; removes the JPEG "
+                             "decoding that starves the GPU. Needs the RAM.")
+    parser.add_argument('--log_every', type=int, default=25,
+                        help="Steps between progress-bar loss readouts. Reading a loss "
+                             "value forces the CPU to wait for the GPU, so not every step.")
     # Upstream hardcoded 10, which was harmless only because their SyncNet was
     # collapsed. With a working SyncNet, 10x makes the generator adversarially
     # maximise the frozen scorer and emit noise. Wav2Lip uses 0.03.
@@ -79,7 +87,12 @@ class PerceptualLoss():
         # whole 20M-parameter VGG19 feature stack to the GPU and then discarded
         # everything past conv3_3, wasting both VRAM and host RAM on a machine
         # that has little of either.
-        cnn = models.vgg19(pretrained=True).features
+        # Same ImageNet weights either way; `pretrained=` is the pre-0.13
+        # torchvision spelling, gone from current releases.
+        try:
+            cnn = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).features
+        except AttributeError:
+            cnn = models.vgg19(pretrained=True).features
         model = nn.Sequential()
         for i,layer in enumerate(list(cnn)):
             model.add_module(str(i),layer)
@@ -136,6 +149,15 @@ def cosine_loss(a, v, y):
 
     return loss
 
+def atomic_save(obj, path):
+    """torch.save via a temp file and a rename, so a disconnect mid-write
+    (Colab, a Drive mount) leaves the previous checkpoint intact instead of a
+    truncated file that cannot be resumed from."""
+    tmp = path + ".tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
 def train(net, epoch, batch_size, lr):
     content_loss = PerceptualLoss(torch.nn.MSELoss())
     if use_syncnet:
@@ -154,9 +176,14 @@ def train(net, epoch, batch_size, lr):
 
     # Resolve which frames this run may see. Explicit flags win over the manifest.
     train_start, train_end = args.train_start, args.train_end
+    train_ranges = None
     if args.manifest:
         with open(args.manifest) as _f:
             _tr = _json.load(_f)["splits"]["train"]
+        if "ranges" in _tr and train_start is None and train_end is None:
+            # a train split on both sides of a held-out stretch
+            train_ranges = _tr["ranges"]
+            train_start, train_end = train_ranges[0][0], train_ranges[-1][1]
         if train_start is None:
             train_start = _tr["start"]
         if train_end is None:
@@ -179,7 +206,8 @@ def train(net, epoch, batch_size, lr):
                     "sync_start_epoch": args.sync_start_epoch,
                     "manifest": args.manifest,
                     "train_start": train_start,
-                    "train_end": train_end}, _f, indent=2)
+                    "train_end": train_end,
+                    "train_ranges": train_ranges}, _f, indent=2)
     print(f"Sync loss: weight {args.sync_weight} from epoch {args.sync_start_epoch}")
     print(f"Mouth mask: {args.mask_version} "
           f"({'jaw hidden' if args.mask_version != 'legacy' else 'jaw VISIBLE - leaks mouth shape'})")
@@ -188,10 +216,17 @@ def train(net, epoch, batch_size, lr):
     dataset_dir_list = [args.dataset_dir]
     for dataset_dir in dataset_dir_list:
         dataset = MyDataset(dataset_dir, args.asr, mask_version=args.mask_version,
-                            start=train_start, end=train_end)
+                            start=train_start, end=train_end, ranges=train_ranges,
+                            cache=args.cache,
+                            cache_threads=max(1, (os.cpu_count() or 2) - 1))
+        workers = args.num_workers
         train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                                      drop_last=False, num_workers=args.num_workers,
-                                      persistent_workers=(args.num_workers > 0))
+                                      drop_last=False, num_workers=workers,
+                                      persistent_workers=(workers > 0),
+                                      # pinned host memory lets the copy to the
+                                      # GPU overlap with compute
+                                      pin_memory=torch.cuda.is_available(),
+                                      prefetch_factor=(4 if workers > 0 else None))
         dataloader_list.append(train_dataloader)
         dataset_list.append(dataset)
 
@@ -204,6 +239,10 @@ def train(net, epoch, batch_size, lr):
         print("AMP enabled (fp16 autocast).")
 
     start_epoch = 0
+    if args.resume == "auto":
+        auto = os.path.join(save_dir, "last.pth")
+        args.resume = auto if os.path.exists(auto) else ""
+        print(f"Resume: {'continuing from ' + auto if args.resume else 'no last.pth, starting fresh'}")
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cuda")
         net.load_state_dict(ckpt["model"])
@@ -220,7 +259,8 @@ def train(net, epoch, batch_size, lr):
 
     for e in range(start_epoch, epoch):
         net.train()
-        epoch_terms = []
+        term_sum = None          # on the GPU; read once per --log_every steps
+        steps = 0
         random_i = random.randint(0, len(dataset_dir_list)-1)
         dataset = dataset_list[random_i]
         train_dataloader = dataloader_list[random_i]
@@ -228,9 +268,9 @@ def train(net, epoch, batch_size, lr):
         with tqdm(total=len(dataset), desc=f'Epoch {e + 1}/{epoch}', unit='img') as p:
             for batch in train_dataloader:
                 imgs, labels, audio_feat = batch
-                imgs = imgs.cuda()
-                labels = labels.cuda()
-                audio_feat = audio_feat.cuda()
+                imgs = imgs.cuda(non_blocking=True)
+                labels = labels.cuda(non_blocking=True)
+                audio_feat = audio_feat.cuda(non_blocking=True)
                 with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                     preds = net(imgs, audio_feat)
                     if use_syncnet:
@@ -262,21 +302,24 @@ def train(net, epoch, batch_size, lr):
                     sync_loss = torch.zeros((), device=preds.device)
                 # Log the terms separately - a single total hides the generator
                 # trading image quality away for sync score.
-                p.set_postfix(**{'L1': f'{loss_pixel.item():.4f}',
-                                 'vgg': f'{loss_PerceptualLoss.item():.3f}',
-                                 'sync': f'{float(sync_loss):.4f}',
-                                 'chr': f'{float(chroma):.4f}'})
-                epoch_terms.append((loss_pixel.item(), float(loss_PerceptualLoss),
-                                    float(sync_loss), float(chroma)))
+                terms = torch.stack([loss_pixel.detach().float(),
+                                     loss_PerceptualLoss.detach().float(),
+                                     sync_loss.detach().float(),
+                                     chroma.detach().float()])
+                term_sum = terms if term_sum is None else term_sum + terms
+                steps += 1
+                if steps % args.log_every == 0:
+                    t = terms.tolist()
+                    p.set_postfix(L1=f'{t[0]:.4f}', vgg=f'{t[1]:.3f}',
+                                  sync=f'{t[2]:.4f}', chr=f'{t[3]:.4f}')
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
                 p.update(imgs.shape[0])
                 
-        if epoch_terms:
-            import numpy as _np
-            m = _np.mean(epoch_terms, axis=0)
+        if steps:
+            m = (term_sum / steps).tolist()
             w_now = args.sync_weight if e >= args.sync_start_epoch else 0.0
             with open(loss_log, "a") as f:
                 f.write(f"{e+1},{m[0]:.6f},{m[1]:.6f},{m[2]:.6f},{m[3]:.6f},{w_now}" + chr(10))
@@ -284,13 +327,14 @@ def train(net, epoch, batch_size, lr):
 
         # last.pth is the full resume state. The numbered files stay plain
         # state_dicts so inference/eval scripts keep loading them unchanged.
-        torch.save({"epoch": e + 1,
-                    "model": net.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scaler": scaler.state_dict()},
-                   os.path.join(save_dir, "last.pth"))
         if (e+1) % 5 == 0:
-            torch.save(net.state_dict(), os.path.join(save_dir, str(e)+'.pth'))
+            atomic_save(net.state_dict(), os.path.join(save_dir, str(e)+'.pth'))
+        # last.pth goes last: if it says epoch N, every numbered file up to N exists
+        atomic_save({"epoch": e + 1,
+                     "model": net.state_dict(),
+                     "optimizer": optimizer.state_dict(),
+                     "scaler": scaler.state_dict()},
+                    os.path.join(save_dir, "last.pth"))
         if args.see_res:
             net.eval()
             img_concat_T, img_real_T, audio_feat = dataset.__getitem__(random.randint(0, dataset.__len__()))
@@ -310,5 +354,8 @@ def train(net, epoch, batch_size, lr):
 if __name__ == '__main__':
     
     
+    # Input sizes never change, so let cuDNN pick its fastest convolution
+    # algorithms once. Same maths; only which kernel computes it changes.
+    torch.backends.cudnn.benchmark = True
     net = Model(6, mode=args.asr).cuda()
     train(net, args.epochs, args.batchsize, args.lr)

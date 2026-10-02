@@ -137,6 +137,8 @@ def split_range(start: int, end: int):
 
 def manifest_split_indices(manifest, split_name: str):
     split = manifest["splits"][split_name]
+    if "ranges" in split:   # a split on both sides of a held-out stretch
+        return [i for s, e in split["ranges"] for i in split_range(int(s), int(e))]
     return split_range(int(split["start"]), int(split["end"]))
 
 

@@ -2,6 +2,7 @@ import os
 import cv2
 import json
 import argparse
+import multiprocessing as mp
 import numpy as np
 from tqdm import tqdm
 
@@ -15,7 +16,7 @@ def run(cmd, what):
         raise RuntimeError(f"{what} failed (exit {code}): {cmd}")
 
 
-def extract_audio(path, out_path, sample_rate=16000):
+def extract_audio(path, out_path, sample_rate=16000, tempo=1.0):
 
     if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
         print(f'[INFO] {out_path} already present, skipping audio extraction')
@@ -23,11 +24,14 @@ def extract_audio(path, out_path, sample_rate=16000):
     print(f'[INFO] ===== extract audio from {path} to {out_path} =====')
     # -y so a re-run overwrites instead of hanging on ffmpeg's prompt, and
     # quoted paths so a directory with spaces does not split into arguments
-    run(f'ffmpeg -y -i "{path}" -f wav -ar {sample_rate} "{out_path}"',
+    # tempo != 1 is --retime: the audio is sped up by exactly the factor the
+    # frames are, so frame i and the audio that was spoken over it still meet.
+    af = f'-af "atempo={tempo:.10f}" ' if abs(tempo - 1.0) > 1e-9 else ""
+    run(f'ffmpeg -y -i "{path}" {af}-f wav -ar {sample_rate} "{out_path}"',
         "audio extraction")
     print(f'[INFO] ===== extracted audio =====')
 
-def extract_images(path):
+def extract_images(path, retime=False):
 
     # os.path, not path.split("/"): on Windows the path separator is a
     # backslash, so the old string surgery silently produced a wrong directory
@@ -44,11 +48,11 @@ def extract_images(path):
     # skip when the count looks complete, so a half-extracted directory is
     # redone rather than silently accepted.
     have = len([f for f in os.listdir(full_body_dir) if f.endswith(".jpg")])
-    if fps == 25 and expected > 0 and have >= expected:
+    if (fps == 25 or retime) and expected > 0 and have >= expected:
         print(f"[INFO] {have} frames already extracted, skipping")
         return
 
-    if fps != 25:
+    if fps != 25 and not retime:
         # High quality conversion to 25fps using ffmpeg
         converted = os.path.splitext(path)[0] + "_25fps.mp4"
         run(f'ffmpeg -y -i "{path}" -vf "fps=25" -c:v libx264 -c:a aac "{converted}"',
@@ -57,7 +61,7 @@ def extract_images(path):
 
     cap = cv2.VideoCapture(path)
     fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps != 25:
+    if fps != 25 and not retime:
         raise ValueError("Your video fps should be 25!!!")
 
     print("extracting images...")
@@ -100,6 +104,113 @@ def read_lms(lms_path):
         return pts if len(pts) >= 100 else None
     except Exception:
         return None
+
+
+_worker_landmark = None
+
+
+def _init_landmark_worker():
+    """One detector per worker process. OpenCV's own thread pool is pinned to
+    one thread so N processes do not each spawn N threads and thrash."""
+    global _worker_landmark
+    cv2.setNumThreads(1)
+    from get_landmark import Landmark
+    _worker_landmark = Landmark()
+
+
+def _detect_chunk(job):
+    """Detect faces for a list of frames; write each hit, return the misses."""
+    full_img_dir, landmarks_dir, items = job
+    missed = []
+    for idx, img_name in items:
+        result = _worker_landmark.detect(os.path.join(full_img_dir, img_name))
+        if result is None:
+            missed.append(idx)
+            continue
+        pre_landmark, x1, y1 = result
+        write_lms(os.path.join(landmarks_dir, f"{idx}.lms"),
+                  [(p[0] + x1, p[1] + y1) for p in pre_landmark])
+    return missed
+
+
+def get_landmark_parallel(path, landmarks_dir, workers):
+    """get_landmark, with detection spread over `workers` processes.
+
+    Detection is independent per frame, so it runs in parallel. The one
+    order-dependent step - a frame with no face takes the landmarks of the
+    nearest earlier frame that has one (or the first, for a leading run) -
+    runs afterwards, sequentially, in timeline order, which is exactly what
+    the serial version produces. Resume works the same way: frames with a
+    valid .lms are skipped.
+    """
+    print(f"detecting landmarks with {workers} worker processes...")
+    base = os.path.dirname(path)
+    full_img_dir = os.path.join(base, "full_body_img")
+    missing_log = os.path.join(base, "landmarks_missing.txt")
+    frames = sorted(
+        (f for f in os.listdir(full_img_dir) if f.endswith(".jpg")),
+        key=lambda f: int(os.path.splitext(f)[0]),
+    )
+    todo = []
+    for img_name in frames:
+        idx = int(os.path.splitext(img_name)[0])
+        if read_lms(os.path.join(landmarks_dir, f"{idx}.lms")) is None:
+            todo.append((idx, img_name))
+    print(f"[INFO] {len(frames) - len(todo)}/{len(frames)} landmarks already present")
+
+    missing = set()
+    if os.path.exists(missing_log):
+        missing = {int(l) for l in open(missing_log).read().split() if l.strip()}
+
+    if todo:
+        chunk = 64
+        jobs = [(full_img_dir, landmarks_dir, todo[i:i + chunk])
+                for i in range(0, len(todo), chunk)]
+        # spawn, not fork: each worker initialises CUDA for the landmark net
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(workers, initializer=_init_landmark_worker) as pool, \
+                open(missing_log, "a") as log:
+            with tqdm(total=len(todo)) as bar:
+                for job, missed in zip(jobs, pool.imap(_detect_chunk, jobs)):
+                    for idx in missed:
+                        if idx not in missing:
+                            missing.add(idx)
+                            log.write(f"{idx}\n")
+                    log.flush()
+                    bar.update(len(job[2]))
+
+    # Sequential fill, in timeline order - identical to the serial version.
+    last_good, pending = None, []
+    for img_name in frames:
+        idx = int(os.path.splitext(img_name)[0])
+        lms_path = os.path.join(landmarks_dir, f"{idx}.lms")
+        existing = read_lms(lms_path) if idx not in missing else None
+        if existing is not None:
+            last_good = existing
+            for p in pending:
+                write_lms(p, existing)
+            pending = []
+            continue
+        if last_good is None:
+            pending.append(lms_path)
+        else:
+            write_lms(lms_path, last_good)
+    if pending:
+        raise RuntimeError(
+            f"no face detected in ANY of {len(frames)} frames of {path} - "
+            "wrong video, or the detector cannot see this footage")
+
+    ordered = sorted(missing)
+    report = {
+        "video": os.path.basename(path),
+        "frames": len(frames),
+        "missing_count": len(ordered),
+        "missing_pct": round(len(ordered) / max(len(frames), 1) * 100, 3),
+        "missing_frames": ordered,
+    }
+    with open(os.path.join(base, "landmarks_missing.json"), "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"[INFO] landmarks done; {len(ordered)} frames had no detectable face")
 
 
 def get_landmark(path, landmarks_dir):
@@ -205,6 +316,13 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
     parser.add_argument('path', type=str, help="path to video file")
+    parser.add_argument('--retime', action='store_true',
+                        help="Video not at 25 fps: keep every native frame and treat it as "
+                             "1/25 s, speeding the audio up by the same factor (25/fps). "
+                             "Lossless; the default instead re-encodes with ffmpeg fps=25, "
+                             "which duplicates or drops frames.")
+    parser.add_argument('--workers', type=int, default=1,
+                        help="Processes for landmark detection. 1 = the original serial path.")
     opt = parser.parse_args()
 
     base_dir = os.path.dirname(opt.path)
@@ -213,9 +331,24 @@ if __name__ == "__main__":
 
     os.makedirs(landmarks_dir, exist_ok=True)
     
-    extract_audio(opt.path, wav_path)
-    extract_images(opt.path)
-    get_landmark(opt.path, landmarks_dir)
+    tempo = 1.0
+    if opt.retime:
+        _cap = cv2.VideoCapture(opt.path)
+        native_fps = _cap.get(cv2.CAP_PROP_FPS)
+        _cap.release()
+        tempo = 25.0 / native_fps
+        with open(os.path.join(base_dir, "retime.json"), "w") as f:
+            json.dump({"native_fps": native_fps, "audio_tempo": tempo,
+                       "note": "every native frame kept as 1/25 s; audio sped up by audio_tempo"},
+                      f, indent=2)
+        print(f"[INFO] retime: {native_fps} fps -> 25 fps, audio tempo x{tempo:.6f}")
+
+    extract_audio(opt.path, wav_path, tempo=tempo)
+    extract_images(opt.path, retime=opt.retime)
+    if opt.workers > 1:
+        get_landmark_parallel(opt.path, landmarks_dir, opt.workers)
+    else:
+        get_landmark(opt.path, landmarks_dir)
     get_audio_feature(wav_path)
     
     
