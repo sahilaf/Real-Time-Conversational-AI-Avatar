@@ -372,6 +372,7 @@ class AvatarStream:
         self.utterances: deque[Utterance] = deque()
         self.resume_source_idx: Optional[int] = None
         self.idle_pos = 0                           # position in the idle cache
+        self.idle_dir = 1                           # +1 / -1: idle plays back and forth
         self.need_align = True                      # send align before next audio
         self.awaiting_reset = False                 # drop packets until reset_done
 
@@ -1024,8 +1025,17 @@ async def video_pump(st: AvatarStream, video_source: rtc.VideoSource):
                 st.resume_source_idx = None
 
         if st.idle and st.idle.frames:
-            bgr = decode(st.idle.frames[st.idle_pos % len(st.idle.frames)])
-            st.idle_pos = (st.idle_pos + 1) % len(st.idle.frames)
+            n = len(st.idle.frames)
+            st.idle_pos %= n
+            bgr = decode(st.idle.frames[st.idle_pos])
+            # Back and forth, never wrap: the cache is a one-way sweep through
+            # the footage (source 7615..7714), so wrapping snapped the head
+            # 4 s of motion backwards every 4 s. Reversing keeps every step
+            # between neighbouring source frames.
+            if n > 1:
+                if not 0 <= st.idle_pos + st.idle_dir < n:
+                    st.idle_dir = -st.idle_dir
+                st.idle_pos += st.idle_dir
             if bgr is not None:
                 await publish(bgr)
         elif last_bgr is not None:
@@ -1305,17 +1315,22 @@ async def entrypoint(ctx: JobContext):
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def prewarm(proc):
+    """Load the VAD model once per worker, not once per conversation.
+
+    Module level, not under __main__: job processes re-import this file as
+    __mp_main__ and look prewarm up by name, so defining it inside the main
+    guard crashes every job process on Linux (production `start` mode)."""
+    if LOCAL_VAD:
+        proc.userdata["vad"] = silero.VAD.load(
+            min_silence_duration=VAD_MIN_SILENCE,
+            activation_threshold=VAD_ACTIVATION)
+
+
 if __name__ == "__main__":
     required = ["GOOGLE_API_KEY", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
         raise SystemExit(f"Missing required env vars: {', '.join(missing)}")
-
-    def prewarm(proc):
-        """Load the VAD model once per worker, not once per conversation."""
-        if LOCAL_VAD:
-            proc.userdata["vad"] = silero.VAD.load(
-                min_silence_duration=VAD_MIN_SILENCE,
-                activation_threshold=VAD_ACTIVATION)
 
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
