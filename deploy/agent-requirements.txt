@@ -1,0 +1,18 @@
+# The agent's packages, pinned to the versions in agent/venv that the live
+# demo was tested with (agent/requirements.txt only sets lower bounds).
+# Installed into a separate virtualenv in the Modal image: the avatar server
+# needs numpy 1.x under torch 2.2, the agent needs numpy 2.x.
+livekit-agents==1.6.10
+livekit-plugins-google==1.6.10
+livekit-plugins-silero==1.6.10
+livekit==1.1.14
+livekit-api==1.2.0
+google-genai==2.18.1
+python-dotenv==1.2.1
+aiohttp==3.13.3
+requests==2.32.5
+websockets==15.0.1
+soundfile==0.13.1
+numpy==2.4.1
+# headless: same cv2 API, no libGL/X11 needed in the container
+opencv-python-headless==4.13.0.90
