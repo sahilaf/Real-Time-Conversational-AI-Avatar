@@ -70,3 +70,9 @@ hdtf/meta/
 crossaudio/
 eval_clips/
 *.tar
+
+# ---- Node (landing page: three.js is vendored into vendor/; node_modules is only the copy source) ----
+node_modules/
+
+# ---- Local Claude Code / preview config ----
+.claude/

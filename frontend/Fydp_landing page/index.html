@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FYDP_V2 — Real-Time Bangla Speech Driven Avatar Generation</title>
+<meta name="description" content="Alapon: a real-time Bangla conversational avatar. Speak Bangla in the browser and a lip-synced face answers, rendered by a 49 MB model at 30 fps on a laptop GPU. Team Deep Thinkers, United International University." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2305070c'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%2358c8e8' stroke-width='2'/%3E%3C/svg%3E" />
+<link rel="preload" href="head.glb" as="fetch" type="model/gltf-binary" crossorigin />
+<link rel="stylesheet" href="styles.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/build/three.module.js",
+    "three/addons/": "./vendor/jsm/",
+    "three-mesh-bvh": "./vendor/three-mesh-bvh/index.module.js"
+  }
+}
+</script>
+</head>
+<body>
+
+  <div class="stage" aria-hidden="true">
+    <canvas id="scene"></canvas>
+    <div class="stage-grid"></div>
+    <div class="stage-grain"></div>
+  </div>
+
+  <!-- Draughting overlay: brackets, rulers and margin notes -->
+  <div class="hud" aria-hidden="true">
+    <svg class="hud-frame" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+      <path class="hud-bracket" d="M12 60 L12 12 L60 12" />
+      <path class="hud-bracket" d="M940 12 L988 12 L988 60" />
+      <path class="hud-bracket" d="M988 940 L988 988 L940 988" />
+      <path class="hud-bracket" d="M60 988 L12 988 L12 940" />
+      <line class="hud-hair" x1="12" y1="500" x2="52" y2="500" />
+      <line class="hud-hair" x1="948" y1="500" x2="988" y2="500" />
+      <line class="hud-hair" x1="500" y1="12" x2="500" y2="44" />
+    </svg>
+
+    <div class="hud-ticks hud-ticks--left"></div>
+    <div class="hud-ticks hud-ticks--right"></div>
+  </div>
+
+  <div class="loader" id="loader">
+    <div class="loader-inner">
+      <div class="loader-bar"><span id="loader-fill"></span></div>
+      <p class="loader-label" id="loader-label">Loading assembly</p>
+    </div>
+  </div>
+
+  <header class="nav">
+    <a class="brand" href="#">
+      <span class="brand-mark"></span>
+      <span class="brand-name">FYDP<i>_V2</i></span>
+    </a>
+    <nav class="nav-links">
+      <a href="#pipeline">Pipeline</a>
+      <a href="#findings">Findings</a>
+      <a href="#results">Results</a>
+      <a href="#status">Status</a>
+      <a href="#team">Team</a>
+    </nav>
+    <a class="btn btn-solid nav-cta" href="/demo">Try the demo</a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="hero-text">
+        <h1 class="headline">
+          <span>Speak Bangla.</span>
+          <span>Watch it answer.</span>
+        </h1>
+
+        <p class="lede">
+          A real-time conversational avatar for Bangla. Speak in your browser, Gemini
+          answers in Bangla, and Alapon, our 49&nbsp;MB lip-sync model, gives the reply
+          a face — rendered live on a laptop GPU.
+        </p>
+
+        <div class="actions">
+          <a class="btn btn-solid" href="/demo">Try the live demo</a>
+          <a class="btn btn-ghost" href="#pipeline">See the pipeline</a>
+        </div>
+        </div>
+
+        <!-- Desktop only: balances the copy on the other side of the bust -->
+        <dl class="hero-readouts">
+          <div class="readout"><dt>30<em>fps</em></dt><dd>On a laptop RTX 3050</dd></div>
+          <div class="readout"><dt>49<em>MB</em></dt><dd>Alapon model size</dd></div>
+          <div class="readout"><dt>1.5–2<em>s</em></dt><dd>You stop, it answers</dd></div>
+        </dl>
+      </div>
+
+      <div class="scroll-hint"><span></span>Scroll</div>
+    </section>
+
+    <div class="page-body">
+      <section class="capabilities" id="pipeline">
+        <h2 class="section-title">Speech in, a speaking face out.</h2>
+        <p class="section-lede">
+          The browser, the conversation and the avatar are separate services joined by
+          LiveKit, so any one of them can be retrained or swapped without touching the
+          others — and you can interrupt the avatar mid-sentence.
+        </p>
+        <div class="cards cards--two">
+          <article class="card">
+            <span class="card-index">01 — Listening</span>
+            <h3>Your voice, over LiveKit</h3>
+            <p>
+              Microphone audio travels from the browser to the agent over WebRTC. A local
+              voice detector decides when you have finished, tuned to wait through the
+              pauses Bangla speakers make mid-sentence rather than cut them off.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-index">02 — Conversation</span>
+            <h3>Gemini Live, speech to speech</h3>
+            <p>
+              Gemini hears the Bangla audio and answers in spoken Bangla directly, so there
+              is no separate transcription and text-to-speech chain adding delay between
+              your question and the reply.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-index">03 — Avatar</span>
+            <h3>Alapon renders the face</h3>
+            <p>
+              The reply audio streams to Alapon, a U-Net built on SyncTalk_2D and adapted
+              to Bangla, which paints the mouth region of the speaker frame by frame at
+              30 fps on a 4 GB laptop GPU.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-index">04 — Delivery</span>
+            <h3>Back to you, in sync</h3>
+            <p>
+              Frames and audio are published together on LiveKit, so the browser plays a
+              face whose lips land on the words — about 1.5 to 2 seconds after you stop
+              speaking.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="capabilities" id="findings">
+        <h2 class="section-title">What we found building it.</h2>
+        <p class="section-lede">
+          Adapting SyncTalk_2D to Bangla meant Bangla training video, a Bangla-trained
+          lip-sync expert and streaming audio features. Along the way, three results
+          changed how we measured the whole field.
+        </p>
+        <div class="cards">
+          <article class="card">
+            <span class="card-index">01 — The fix</span>
+            <h3>The mouth was copying, not listening</h3>
+            <p>
+              The original mouth mask left the jaw visible, so the model copied mouth
+              movement from the input video instead of following the audio: it moved in
+              41% of silent frames. Covering the jaw brings Alapon to 0.1%.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-index">02 — The metric</span>
+            <h3>Scoring above a real human</h3>
+            <p>
+              We scored real video as if it were a system. Both Wav2Lip models rate as
+              better synced than the real speaker — impossible — and five of six published
+              systems moved their mouths in silence without the metric noticing.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-index">03 — The language</span>
+            <h3>It follows Bangla sounds</h3>
+            <p>
+              The real speaker opens 4.0× wider on আ অ than on প ব ম; Alapon opens
+              3.8×, the closest of every system. Driven by six Bangla voices it had never
+              heard, it reaches 2.3×, up from 1.7× before the fix.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="capabilities" id="results">
+        <h2 class="section-title">Measured against six published systems.</h2>
+        <p class="section-lede">
+          We quoted nobody: every system was re-run by us on the same Bangla clip with the
+          same scoring code, and real video is scored alongside them as the target. The
+          goal is not the highest score — it is landing closest to real.
+        </p>
+        <div class="results-wrap">
+          <table class="results">
+            <thead>
+              <tr>
+                <th scope="col">System</th>
+                <th scope="col">Size</th>
+                <th scope="col">Lip-sync <i>LSE-C, near real</i></th>
+                <th scope="col">Moves in silence <i>lower is better</i></th>
+                <th scope="col">Articulation <i>1.00 = real</i></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="results-real"><th scope="row">Real video</th><td>—</td><td>5.14</td><td>—</td><td>1.00</td></tr>
+              <tr class="results-ours"><th scope="row">Alapon (ours)</th><td>49 MB</td><td>5.11</td><td>0.1%</td><td>0.94</td></tr>
+              <tr><th scope="row">LatentSync 1.5</th><td>5,072 MB</td><td>5.09</td><td>36%</td><td>0.79</td></tr>
+              <tr><th scope="row">MuseTalk 1.5</th><td>3,400 MB</td><td>4.90</td><td>0.4%</td><td>0.53</td></tr>
+              <tr><th scope="row">Wav2Lip (GAN)</th><td>436 MB</td><td>6.08</td><td>46%</td><td>1.21</td></tr>
+              <tr><th scope="row">Wav2Lip (non-GAN)</th><td>436 MB</td><td>6.44</td><td>0.8%</td><td>1.05</td></tr>
+              <tr><th scope="row">IP-LAP</th><td>475 MB</td><td>4.36</td><td>20%</td><td>0.76</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="results-note">
+          Alapon's training data overlapped this test clip, so its scores here are being
+          re-measured after a clean retrain; the six-new-speaker result above is
+          unaffected. LSE-C reproduces to about ±0.04.
+        </p>
+
+        <div class="cards cards--four">
+          <article class="card">
+            <span class="card-index">Speed</span>
+            <h3>30 fps</h3>
+            <p>On a laptop RTX 3050. The video format needs 25.</p>
+          </article>
+          <article class="card">
+            <span class="card-index">Memory</span>
+            <h3>0.3 GB</h3>
+            <p>Of a 4 GB laptop GPU. It needs a corner of one, not a datacentre.</p>
+          </article>
+          <article class="card">
+            <span class="card-index">Size</span>
+            <h3>104× smaller</h3>
+            <p>Than LatentSync 1.5, the one system that matches its lip-sync score.</p>
+          </article>
+          <article class="card">
+            <span class="card-index">New face</span>
+            <h3>~4 min of video</h3>
+            <p>And about 7 hours of training to learn a new speaker.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="capabilities" id="status">
+        <h2 class="section-title">Where the project stands.</h2>
+        <p class="section-lede">
+          Alapon is person-specific — one face per model — and we measure how far the
+          mouth opens, not yet its exact shape. Formal evaluation so far is on one Bangla
+          speaker.
+        </p>
+        <ol class="steps">
+          <li class="step step--done">
+            <span class="step-mark">Complete</span>
+            <h3>Real-time Bangla avatar</h3>
+            <p>
+              Browser to Gemini to Alapon and back, running live on a consumer laptop and
+              answering within 1.5–2 seconds.
+            </p>
+          </li>
+          <li class="step step--done">
+            <span class="step-mark">Complete</span>
+            <h3>Cross-system benchmark</h3>
+            <p>
+              78 measurements across six systems on Bangla video and the English HDTF
+              set, with real video scored as the reference. Being prepared as a journal
+              paper.
+            </p>
+          </li>
+          <li class="step">
+            <span class="step-mark">Next</span>
+            <h3>Retrain and human study</h3>
+            <p>
+              A clean retrain without test-clip overlap, more Bangla speakers, and a
+              blind, randomised study with native speakers — then a pilot in a school or
+              public office.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="capabilities" id="team">
+        <h2 class="section-title">Team Deep Thinkers.</h2>
+        <div class="team">
+          <div class="team-group">
+            <span class="team-label">Group E1 — 253</span>
+            <ul>
+              <li>Sahil Al Farib <em>011222186</em></li>
+              <li>Momota Ahsana Meem <em>011222254</em></li>
+              <li>Sheikh Redwanul Islam <em>011222142</em></li>
+              <li>Khan Md. Shams Arefin <em>011222320</em></li>
+              <li>Sumaiya Akter Eva <em>011222188</em></li>
+              <li>Rumman Hossain <em>011222308</em></li>
+            </ul>
+          </div>
+          <div class="team-group">
+            <span class="team-label">Supervision</span>
+            <ul>
+              <li>Dr. Mohammad Nurul Huda <em>Supervisor</em></li>
+              <li>Azizur Rahman Anik <em>Co-supervisor</em></li>
+              <li>Dr. Riasat Azim <em>Course teacher</em></li>
+            </ul>
+          </div>
+          <div class="team-group">
+            <span class="team-label">Environment</span>
+            <ul>
+              <li>AMD Ryzen 7 5800H <em>CPU</em></li>
+              <li>NVIDIA RTX 3050 Laptop <em>4 GB GPU</em></li>
+              <li>8 GB <em>RAM</em></li>
+              <li>Hybrid <em>local avatar, Gemini in the cloud</em></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="cta" id="report">
+        <h2>The report, the slides and the demo.</h2>
+        <p>
+          Submitted 28 February 2026 in partial fulfilment of the BSc in Computer Science
+          and Engineering, United International University, Dhaka.
+        </p>
+        <div class="actions">
+          <a class="btn btn-solid" href="/demo">Launch the demo</a>
+          <a class="btn btn-ghost" href="#">Open the report</a>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>FYDP_V2 — Team Deep Thinkers</span>
+    <span>Real-Time Bangla Speech Driven Avatar Generation</span>
+    <span>UIU CSE — 2026</span>
+  </footer>
+
+  <script type="module" src="head-scene.js"></script>
+</body>
+</html>

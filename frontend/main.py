@@ -18,8 +18,27 @@ if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
     raise ValueError("LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set in .env file")
 
 
+# The landing page is a standalone static site; its HTML references its CSS,
+# JS, vendored three.js and head.glb by relative path, so it is served from
+# the site root and those paths resolve without edits.
+LANDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Fydp_landing page")
+
+
 @app.route("/")
-def index():
+def landing():
+    """Serve the landing page, which links through to the demo."""
+    return send_from_directory(LANDING_DIR, "index.html")
+
+
+@app.route("/<path:filename>")
+def landing_asset(filename):
+    """Serve the landing page's assets. Explicit routes (/demo, /token,
+    /health, /static/...) match before this catch-all."""
+    return send_from_directory(LANDING_DIR, filename)
+
+
+@app.route("/demo")
+def demo():
     """Serve the playground UI.
 
     The page lives in static/playground.html rather than inline here; it is
@@ -75,7 +94,8 @@ if __name__ == "__main__":
     print("=" * 60)
     print("LiveKit token server + avatar playground")
     print("=" * 60)
-    print(f"  Playground : http://localhost:5000")
+    print(f"  Landing    : http://localhost:5000")
+    print(f"  Demo       : http://localhost:5000/demo")
     print(f"  LiveKit    : {LIVEKIT_URL}")
     print("=" * 60)
 
