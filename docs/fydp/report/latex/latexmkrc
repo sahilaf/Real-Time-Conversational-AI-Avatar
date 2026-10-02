@@ -1,0 +1,5 @@
+# Force XeLaTeX: the template uses fontspec + polyglossia (Bangla font),
+# which do not work under pdfLaTeX. Overleaf reads this file automatically.
+$pdf_mode = 5;
+$postscript_mode = 0;
+$dvi_mode = 0;

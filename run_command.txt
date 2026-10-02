@@ -1,0 +1,21 @@
+Cloud Faare tunnel--------->>
+
+
+cloudflared tunnel --url http://localhost:5000
+
+
+frontend--------->>
+conda deactivate
+cd frontend
+venv\Scripts\activate
+python main.py
+
+Run agent---------->>>>
+conda deactivate
+cd agent && .\venv\Scripts\activate
+python agent_bangla.py dev
+
+run model--->>>>
+conda activate synctalk
+cd SyncTalk_2D
+python avatar_server_ws.py --checkpoint checkpoint/alapon/59.pth --dataset dataset/redwan --mode ave --port 5001

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="690" height="560" viewBox="0 0 690 560" role="img" aria-label="System architecture in four layers: client, real-time communication, Bangla agent, and the avatar server where Alapon renders frames." font-family="Atkinson Hyperlegible, Segoe UI, sans-serif" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#121A2A"/></marker>
+    <marker id="b3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2A78D6"/></marker>
+  </defs>
+  <rect width="690" height="560" fill="#ffffff"/>
+  <!-- layers -->
+  <rect x="14" y="34" width="402" height="72" rx="8" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <rect x="14" y="139" width="402" height="72" rx="8" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <rect x="14" y="254" width="402" height="72" rx="8" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <rect x="14" y="384" width="612" height="152" rx="8" fill="#F1F6FD" stroke="#7FACE6" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <!-- components -->
+  <g stroke="#A8A69D" stroke-width="1.2" fill="#ffffff">
+    <rect x="25" y="45" width="170" height="50" rx="6"/>
+    <rect x="235" y="45" width="170" height="50" rx="6"/>
+    <rect x="27" y="150" width="376" height="50" rx="6" stroke-dasharray="5 3"/>
+    <rect x="25" y="265" width="170" height="50" rx="6"/>
+    <rect x="235" y="265" width="170" height="50" rx="6"/>
+    <rect x="495" y="265" width="170" height="50" rx="6" stroke-dasharray="5 3"/>
+    <rect x="25" y="395" width="170" height="50" rx="6"/>
+    <rect x="445" y="395" width="170" height="50" rx="6"/>
+    <rect x="445" y="475" width="170" height="50" rx="6"/>
+  </g>
+  <rect x="235" y="395" width="170" height="50" rx="6" fill="#E3EEFB" stroke="#2A78D6" stroke-width="1.8"/>
+  <g font-size="12.5" fill="#121A2A" text-anchor="middle">
+    <text x="110" y="66">Browser client</text><text x="110" y="83" font-size="11.5" fill="#52514E">mic, video, transcript</text>
+    <text x="320" y="66">Token server</text><text x="320" y="83" font-size="11.5" fill="#52514E">(Flask)</text>
+    <text x="215" y="180">LiveKit Cloud (WebRTC): real-time audio and video</text>
+    <text x="110" y="286">Silero VAD</text><text x="110" y="303" font-size="11.5" fill="#52514E">end of turn: 0.55 s</text>
+    <text x="320" y="286">Gemini session</text><text x="320" y="303" font-size="11.5" fill="#52514E">bn-BD, persona, phrases</text>
+    <text x="580" y="286">Gemini 3.1 Flash Live</text><text x="580" y="303" font-size="11.5" fill="#52514E">speech-to-speech (cloud)</text>
+    <text x="110" y="416">Streaming audio</text><text x="110" y="433" font-size="11.5" fill="#52514E">features</text>
+    <text x="320" y="416" font-weight="700" fill="#1C5CAB">Alapon</text><text x="320" y="433" font-size="11.5" fill="#1C5CAB">U-Net renderer</text>
+    <text x="530" y="416">JPEG frames +</text><text x="530" y="433" font-size="11.5" fill="#52514E">segment protocol</text>
+    <text x="530" y="505">Idle frame cache</text>
+  </g>
+  <!-- arrows -->
+  <g stroke="#121A2A" stroke-width="1.6" fill="none">
+    <line x1="233" y1="70" x2="197" y2="70" marker-end="url(#a3)"/>
+    <line x1="110" y1="97" x2="110" y2="148" marker-start="url(#a3)" marker-end="url(#a3)"/>
+    <line x1="110" y1="202" x2="110" y2="263" marker-start="url(#a3)" marker-end="url(#a3)"/>
+    <line x1="197" y1="290" x2="233" y2="290" marker-end="url(#a3)"/>
+    <line x1="407" y1="290" x2="493" y2="290" marker-start="url(#a3)" marker-end="url(#a3)"/>
+    <line x1="530" y1="475" x2="530" y2="447" marker-end="url(#a3)"/>
+  </g>
+  <g stroke="#2A78D6" stroke-width="1.8" fill="none">
+    <line x1="320" y1="317" x2="320" y2="382" marker-end="url(#b3)"/>
+    <line x1="197" y1="420" x2="233" y2="420" marker-end="url(#b3)"/>
+    <line x1="407" y1="420" x2="443" y2="420" marker-end="url(#b3)"/>
+    <path d="M530,395 V345 H390 V318" marker-end="url(#b3)"/>
+  </g>
+  <g font-size="11.5" fill="#52514E">
+    <text x="215" y="284" text-anchor="middle">turn</text>
+    <text x="450" y="284" text-anchor="middle">speech</text>
+    <text x="236" y="352" fill="#1C5CAB">reply audio</text>
+    <text x="236" y="366" fill="#1C5CAB">24 kHz PCM</text>
+    <text x="460" y="339" fill="#1C5CAB" text-anchor="middle">frames + audio</text>
+  </g>
+  <!-- layer titles last, with a white halo, so the arrows pass behind them -->
+  <g font-size="13" font-weight="700" fill="#121A2A" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" paint-order="stroke">
+    <text x="16" y="28">Client layer</text>
+    <text x="16" y="133">Real-time communication layer</text>
+    <text x="16" y="248">Bangla agent (LiveKit Agents)</text>
+    <text x="16" y="378" fill="#1C5CAB">Avatar server (FastAPI, laptop GPU)</text>
+  </g>
+</svg>

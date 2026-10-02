@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="780" height="560" viewBox="0 0 780 560" role="img" aria-label="Sequence diagram of one conversational turn, with the avatar server's messages highlighted in blue." font-family="Atkinson Hyperlegible, Segoe UI, sans-serif" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#121A2A"/></marker>
+    <marker id="b2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2A78D6"/></marker>
+  </defs>
+  <rect width="780" height="560" fill="#ffffff"/>
+  <!-- lifelines -->
+  <g stroke="#C9C7BF" stroke-width="1.6">
+    <line x1="70" y1="58" x2="70" y2="544"/><line x1="174" y1="58" x2="174" y2="544"/><line x1="278" y1="58" x2="278" y2="544"/>
+    <line x1="382" y1="58" x2="382" y2="544"/><line x1="486" y1="58" x2="486" y2="544"/><line x1="590" y1="58" x2="590" y2="544"/>
+  </g>
+  <line x1="694" y1="58" x2="694" y2="544" stroke="#2A78D6" stroke-opacity="0.45" stroke-width="1.6"/>
+  <!-- heads -->
+  <g stroke="#A8A69D" stroke-width="1.2" fill="#F3F2EF">
+    <rect x="28" y="22" width="84" height="36" rx="6"/><rect x="132" y="22" width="84" height="36" rx="6"/><rect x="236" y="22" width="84" height="36" rx="6"/>
+    <rect x="340" y="22" width="84" height="36" rx="6"/><rect x="444" y="22" width="84" height="36" rx="6"/><rect x="548" y="22" width="84" height="36" rx="6"/>
+  </g>
+  <rect x="648" y="22" width="92" height="36" rx="6" fill="#E3EEFB" stroke="#2A78D6" stroke-width="1.8"/>
+  <g font-size="12.5" fill="#121A2A" text-anchor="middle">
+    <text x="70" y="45">User</text>
+    <text x="174" y="37">Browser</text><text x="174" y="52">client</text>
+    <text x="278" y="37">Token</text><text x="278" y="52">server</text>
+    <text x="382" y="45">LiveKit</text>
+    <text x="486" y="37">Bangla</text><text x="486" y="52">agent</text>
+    <text x="590" y="37">Gemini</text><text x="590" y="52">Live</text>
+    <text x="694" y="37" fill="#1C5CAB">Avatar server</text><text x="694" y="52" fill="#1C5CAB">(Alapon)</text>
+  </g>
+  <!-- messages -->
+  <g stroke="#121A2A" stroke-width="1.6" fill="none">
+    <line x1="174" y1="84" x2="276" y2="84" marker-end="url(#a2)"/>
+    <line x1="278" y1="112" x2="176" y2="112" stroke-dasharray="6 4" marker-end="url(#a2)"/>
+    <line x1="174" y1="140" x2="380" y2="140" marker-end="url(#a2)"/>
+    <line x1="70" y1="168" x2="172" y2="168" marker-end="url(#a2)"/>
+    <line x1="174" y1="196" x2="380" y2="196" marker-end="url(#a2)"/>
+    <line x1="382" y1="224" x2="484" y2="224" marker-end="url(#a2)"/>
+    <line x1="486" y1="292" x2="588" y2="292" marker-end="url(#a2)"/>
+    <line x1="590" y1="320" x2="488" y2="320" stroke-dasharray="6 4" marker-end="url(#a2)"/>
+    <line x1="486" y1="444" x2="384" y2="444" marker-end="url(#a2)"/>
+    <line x1="382" y1="472" x2="176" y2="472" marker-end="url(#a2)"/>
+    <line x1="174" y1="500" x2="72" y2="500" marker-end="url(#a2)"/>
+  </g>
+  <g stroke="#2A78D6" stroke-width="1.8" fill="none">
+    <line x1="486" y1="348" x2="692" y2="348" marker-end="url(#b2)"/>
+    <line x1="694" y1="416" x2="488" y2="416" stroke-dasharray="6 4" marker-end="url(#b2)"/>
+  </g>
+  <g font-size="11.5" fill="#52514E" text-anchor="middle" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">
+    <text x="226" y="79">request token</text>
+    <text x="226" y="107">token</text>
+    <text x="278" y="135">join room</text>
+    <text x="122" y="163">speaks Bangla</text>
+    <text x="278" y="191">microphone audio</text>
+    <text x="434" y="219">user audio</text>
+    <text x="538" y="287">user speech</text>
+    <text x="538" y="315">reply speech + transcript</text>
+    <text x="590" y="343" fill="#1C5CAB">reply audio (24 kHz PCM)</text>
+    <text x="590" y="411" fill="#1C5CAB">frames + audio segments</text>
+    <text x="434" y="439">publish audio + video</text>
+    <text x="278" y="467">audio + video</text>
+    <text x="122" y="495">avatar speaks</text>
+  </g>
+  <!-- notes -->
+  <rect x="416" y="238" width="140" height="36" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2"/>
+  <text x="486" y="253" font-size="11.5" fill="#121A2A" text-anchor="middle">VAD: end of turn</text>
+  <text x="486" y="267" font-size="11.5" fill="#121A2A" text-anchor="middle">after 0.55 s of silence</text>
+  <rect x="632" y="362" width="124" height="36" fill="#E3EEFB" stroke="#2A78D6" stroke-width="1.5"/>
+  <text x="694" y="377" font-size="11.5" fill="#1C5CAB" text-anchor="middle">Alapon renders</text>
+  <text x="694" y="391" font-size="11.5" fill="#1C5CAB" text-anchor="middle">lip-synced frames</text>
+  <rect x="150" y="516" width="570" height="24" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2"/>
+  <text x="435" y="532" font-size="11.5" fill="#121A2A" text-anchor="middle">Idle animation is streamed whenever the avatar is not speaking</text>
+</svg>

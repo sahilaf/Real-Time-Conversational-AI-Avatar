@@ -1,0 +1,128 @@
+\chapter{Conclusion}
+
+This chapter summarises the project, states its limitations, and describes the journal paper in progress and future work.
+
+\section{Summary}
+
+This project set out to close a gap: there was no open, real-time conversational avatar that speaks Bangla and runs on a laptop. It delivers one. A user speaks Bangla in a web browser, a speech-to-speech agent replies in formal Bangla, and a 2D avatar speaks the reply with synchronised lip movement.\\
+
+\noindent
+We chose SyncTalk\_2D, the only candidate small and fast enough for a laptop, and confirmed the choice by testing published lip-sync systems on Bangla video. We adapted it to Bangla with Bangla training video, a Bangla-trained lip-sync expert and streaming audio features. We then found four gaps in the model that limited its performance. The most important was the mouth mask: the model copied the visible jaw instead of listening, and its mouth moved in 41\% of frames during silence. Our improved model, \textbf{Alapon}, moves in 0.1\% and separates open and closed Bangla sounds almost as well as the real speaker.\\
+
+\noindent
+We then checked whether published systems have the same problem. Five of the six we tested leak on at least one dataset, and the standard lip-sync metric cannot see it; it even scores generated video above real video. These findings are being prepared as a journal paper.\\
+
+\noindent
+The completed system runs Alapon: 49~MB, 30 frames per second on a laptop RTX 3050 using 0.3~GB of GPU memory, and a reply within 1.5--2 seconds. On the Bangla test clip its lip-sync score matches real video (5.11 against 5.14).
+
+\begin{table}[H]
+\centering
+\caption{Proposed against delivered}
+\label{tab:delivered}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|p{5.2cm}|p{8.3cm}|}
+\hline
+\textbf{Proposed in FYDP-1} & \textbf{Result} \\
+\hline
+Real-time Bangla conversational avatar & \textbf{Done.} Working end-to-end system running Alapon; answers in 1.5--2 s. \\
+\hline
+Separate speech recognition, LLM and speech synthesis & \textbf{Changed} to one speech-to-speech model (Gemini 3.1 Flash Live), which is faster. \\
+\hline
+Real-time on local hardware & \textbf{Done.} 30 fps on a laptop RTX 3050, 0.3 GB GPU memory. \\
+\hline
+End-to-end latency of 200--300 ms (FYDP-1 estimate) & \textbf{Not met.} Measured response is 1.5--2 s, including a deliberate 0.55 s wait so that Bangla pauses are not cut off; the requirement is now 1--2 s. \\
+\hline
+Bangla-trained SyncNet & \textbf{Done.} Retrained with mismatched pairs on the Bangla speaker and used during training. \\
+\hline
+Multilingual audio encoder (XLS-R) & \textbf{Tried, did not work.} Its lip-sync expert learned about half as well as with the default features; not used. \\
+\hline
+Bangla audiovisual dataset & \textbf{Collected.} 2.78 hours from 24 speakers; six speakers used as unseen test audio, none used for training. \\
+\hline
+Bangla phoneme-to-viseme mapping & \textbf{Defined and used for evaluation} (Table~\ref{tab:viseme}, Section~\ref{sec:phoneme}); not yet used in training. \\
+\hline
+Lip-landmark loss & \textbf{Not done.} \\
+\hline
+\textit{Not proposed:} model selection by benchmark & \textbf{Done.} Candidates compared on size and speed (Table~\ref{tab:candidates}). \\
+\hline
+\textit{Not proposed:} closing the model's performance gaps & \textbf{Done.} Four gaps addressed; mouth movement during silence 41\% $\rightarrow$ 0.1\%. \\
+\hline
+\textit{Not proposed:} leakage study of published systems & \textbf{Done.} Six checkpoints on Bangla and HDTF; journal paper in preparation. \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Limitation}
+\label{sec:limitation}
+
+\begin{itemize}
+    \item \textbf{One speaker.} Alapon is trained and tested on one Bangla speaker. Each new face needs its own video and training.
+    \item \textbf{Training overlapped the test frames.} The models in this report were trained before the training split was fixed, so Alapon's lip-sync, reconstruction and Bangla-sound results on the test clip may be somewhat optimistic. The silence test and the six-speaker test are not affected. A retrain on the training frames only is in progress.
+    \item \textbf{Mouth opening, not mouth shape.} The lips open and close correctly for Bangla sounds, but lip width did not show that rounded and spread sounds get different shapes.
+    \item \textbf{Weaker on new voices.} For new speakers the open/closed contrast is 2.3$\times$, against 4.0$\times$ for the real speaker on their own voice.
+    \item \textbf{No human evaluation yet.} All results are automatic measurements; a study with native Bangla speakers is planned (Section~\ref{sec:journal}).
+    \item \textbf{Cloud dependency.} The avatar runs locally, but the conversation needs the Gemini API and an internet connection.
+    \item \textbf{Corpus not used for training.} The 2.78-hour corpus was used only as test audio, and its source licences must be traced before it can be released.
+\end{itemize}
+
+\section{Future Work}
+
+\subsection{Journal Paper in Progress}
+\label{sec:journal}
+
+Following our supervisor's advice, we are turning the findings of Sections~\ref{sec:maskfix} and~\ref{sec:leakage} into a journal paper, \textbf{``Evaluation Integrity in Audio-Driven Talking-Head Generation''}. Its argument is that a widely used talking-head model was not driven by audio at all, that the field's standard evaluation ranked it as working, and that the evaluation's failure modes are specific, measurable and fixable. The target is \textit{IEEE Transactions on Multimedia}, with \textit{IEEE Transactions on Circuits and Systems for Video Technology} and \textit{Pattern Recognition} as alternatives.\\
+
+\noindent
+\textbf{Planned contributions}
+
+\begin{enumerate}
+    \item \textbf{An analysis of SyncTalk\_2D's performance gaps:} four gaps in the model's design and training, with a measured causal mechanism: a ten-pixel strip of jaw produced 91\% of all mouth motion.
+    \item \textbf{Evidence that the standard lip-sync metric can rank generated video above real video}, statistically significant for two systems on a public dataset, made visible by scoring real video as a reference.
+    \item \textbf{A flaw in the leakage measure and its correction.} Leakage as currently measured depends on how much the test speaker moves their mouth; dividing by the speaker's own movement makes results comparable across speakers and datasets.
+    \item \textbf{A paired evaluation protocol} of leakage together with articulation that no degenerate model can pass: a frozen mouth fails articulation, a copying model fails leakage, and an over-animated mouth fails articulation.
+    \item \textbf{A reproducible benchmark:} one scoring code for every system, frozen test splits, pinned environments, and a negative result reported in full.
+    \item \textbf{A Bangla sound-level evaluation}, and the Bangla corpus if its source licences can be traced.
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{Status of the journal paper}
+\label{tab:journal}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|p{8.6cm}|p{4.9cm}|}
+\hline
+\textbf{Work} & \textbf{Status} \\
+\hline
+Mask experiment with six models (Table~\ref{tab:jawrows}) & Done \\
+\hline
+Benchmark: six published checkpoints on Bangla and HDTF, plus Alapon and the before-fix model on Bangla, one scoring code & Done \\
+\hline
+Silence test for every system on both datasets & Done \\
+\hline
+Bangla sound-level evaluation, including six unseen speakers & Done \\
+\hline
+Retrain Alapon and the before-fix model on the training frames only & In progress (about 15 GPU-hours) \\
+\hline
+Human evaluation (below) & Planned; the critical path, 4--6 weeks \\
+\hline
+Further reconstruction metrics (LPIPS, FID) & Planned; about 3 days \\
+\hline
+Corpus licences and ethics approval & Planned \\
+\hline
+\end{tabular}
+\end{table}
+
+\noindent
+\textbf{Human evaluation.} Native Bangla speakers will watch short (8-second) clips of Alapon, the published systems and the real speaker, in random order and without being told which is which, and rate each clip for how well the lips match the speech and how natural it looks. A 6-person pilot will check the procedure, and the main study will use at least 15 people. The ratings will then be compared with the automatic measurements, to test whether the silence test and the real-video reference agree with what people actually see better than the standard lip-sync score does. If they do not, we will not propose them.\\
+
+\noindent
+The remaining work is estimated at about six weeks, most of it the recruitment for the human evaluation.
+
+\subsection{System Extensions}
+
+\begin{itemize}
+    \item \textbf{Bangla phoneme-level lip shape:} use the phoneme-to-viseme mapping as a training signal, so that different Bangla sounds produce visibly different mouth shapes, and narrow the gap on new voices (2.3$\times$ against 4.0$\times$).
+    \item \textbf{Multi-speaker training} with the collected Bangla corpus.
+    \item \textbf{A Bangla audio encoder that works:} revisit XLS-R with more training data.
+    \item \textbf{Fully offline operation} with an on-device conversational model.
+    \item \textbf{Pilot deployment}, starting with Bangla-medium education.
+\end{itemize}

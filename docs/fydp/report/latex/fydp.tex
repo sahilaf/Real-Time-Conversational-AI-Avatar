@@ -1,0 +1,189 @@
+\documentclass[a4paper,11pt]{report}
+
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{english}
+\setotherlanguage{bengali}
+\newfontfamily\bengalifont{Noto Serif Bengali}
+% IPA symbols in Table 3.3 (DejaVu ships with TeX Live)
+\newfontfamily\ipafont{DejaVuSans}[Extension=.ttf, Scale=0.9]
+
+%\usepackage[none]{hyphenat}
+
+%\usepackage[T1]{fontenc}
+%\usepackage[bitstream-charter]{mathdesign}
+
+%\usepackage[usenames,dvipsnames,pdf]{pstricks}
+%\usepackage[crop=off]{auto-pst-pdf}
+\usepackage{makeidx}
+\usepackage{url}
+\usepackage[square,sort,comma,numbers]{natbib}
+\usepackage{framed}
+
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{float}
+
+
+
+\usepackage[noend,ruled,noline,linesnumbered,algochapter]{algorithm2e}
+
+\usepackage[margin=3cm]{geometry}
+\usepackage{setspace}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{array}
+\renewcommand{\arraystretch}{1.6} % makes rows taller
+\usepackage{booktabs}
+\usepackage{pifont}
+\usepackage{adjustbox}
+
+% diagrams drawn in the document (Figures 3.1, 3.2, 3.5, 3.6)
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc,backgrounds}
+
+% palette shared with the benchmark figures: blue = Alapon, orange = the leak, grey = the rest
+\definecolor{alaponblue}{HTML}{2A78D6}
+\definecolor{alaponsoft}{HTML}{E3EEFB}
+\definecolor{alapondark}{HTML}{1C5CAB}
+\definecolor{leakorange}{HTML}{EB6834}
+\definecolor{leaksoft}{HTML}{FDEBE3}
+\definecolor{restsoft}{HTML}{F3F2EF}
+\definecolor{restgrey}{HTML}{C9C7BF}
+\definecolor{axisgrey}{HTML}{A8A69D}
+\definecolor{inkc}{HTML}{121A2A}
+\definecolor{inkgrey}{HTML}{52514E}
+
+
+
+\newcommand{\cmark}{\ding{51}} % check mark
+\newcommand{\xmark}{\ding{55}} % cross mark
+\newcommand{\bn}[1]{\textbengali{#1}} % Bangla text
+\newcommand{\todo}[1]{\textbf{[TODO: #1]}} % must be resolved before submission
+
+
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+
+\rhead{\nouppercase\leftmark}
+\lhead{\nouppercase\rightmark}
+
+\makeindex
+
+\onehalfspacing
+
+\renewcommand*\contentsname{Table of Contents}
+
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\begin{document}
+
+\pagenumbering{roman}
+
+%title page
+\input{0.0.title.tex}
+
+
+%\clearpage
+%\thispagestyle{empty}
+%\mbox{}
+\clearpage
+
+%\thispagestyle{empty}
+%Dedication
+%I would like to dedicate this thesis to my loving family ...
+
+
+
+
+%\clearpage
+%\thispagestyle{empty}
+%\mbox{}
+%\clearpage
+%\thispagestyle{empty}
+\pagenumbering{roman}
+\setcounter{page}{1}
+
+
+\input{0.1.abstract.tex}
+
+\input{0.2.ack.tex}
+
+\input{0.3.pub.tex}
+
+
+
+
+
+
+\clearpage
+\phantomsection
+\tableofcontents
+\renewcommand{\contentsname}{Table of Contents}
+\addcontentsline{toc}{chapter}{Table of Contents}
+
+\clearpage
+\phantomsection
+\addcontentsline{toc}{chapter}{List of Figures}
+\listoffigures
+
+\clearpage
+\phantomsection
+\addcontentsline{toc}{chapter}{List of Tables}
+\listoftables
+
+
+
+\clearpage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+\renewcommand\bibname{References}
+
+\clearpage
+\phantomsection
+
+
+\input{1.intro.tex}
+\input{2.back.tex}
+\input{3.design.tex}
+\input{4.implementation.tex}
+\input{5.sic.tex}
+\input{6.conclusion.tex}
+
+
+\bibliographystyle{unsrtnat}
+\bibliography{fydp}
+\addcontentsline{toc}{chapter}{References}
+
+\clearpage
+%\appendix
+
+%\phantomsection
+
+%\addcontentsline{toc}{chapter}{Appendices}
+%\chapter{Amino Acids\label{appAmino}}
+%\begin{figure}[h]
+%\begin{center}
+%\includegraphics[width=1\textwidth]{./images/background/aminoacids}
+%\end{center}
+%\caption{Twenty different amino acids, their structures and chemical properties.\index{Amino Acid!chemical properties}\cite{Lehninger2012}.}
+%\end{figure}
+%\clearpage
+%\thispagestyle{empty}
+%\mbox{}
+
+%\clearpage
+%\phantomsection
+%\addcontentsline{toc}{chapter}{Index}
+%\printindex
+
+\end{document}

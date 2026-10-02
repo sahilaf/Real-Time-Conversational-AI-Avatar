@@ -14,7 +14,7 @@ different people.
 
 | Doc | What it is |
 |---|---|
-| [FYDP_Final_Report.md](fydp/report/FYDP_Final_Report.md) | **Final report** — the complete rewritten report; [report/README](fydp/report/README.md) lists what changed, the remaining TODOs, and the source of every number |
+| [report/latex/](fydp/report/latex/) | **Final report** in the official UIU LaTeX format (Overleaf zip beside it); [report/README](fydp/report/README.md) lists what changed, the remaining TODOs, and the source of every number |
 | [benchmark_result.md](fydp/benchmark_result.md) | **Every result table in one place** — Bangla comparison, mask fix, speed, Bangla phonemes, HDTF |
 | [story.md](fydp/story.md) | Defence pitch: the gap, the numbers, the use cases, objections, and the pre-show verification checklist |
 

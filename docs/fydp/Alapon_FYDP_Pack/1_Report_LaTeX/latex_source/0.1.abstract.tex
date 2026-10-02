@@ -1,0 +1,17 @@
+%Abstract
+\setlength{\headheight}{14pt}
+\begin{center}
+	{\huge \bf Abstract}
+	\line(1,0){430}
+\end{center}
+
+Real-time talking-head avatars are built and evaluated almost entirely for English. Commercial cloud services now offer Bangla voices, but they are closed, run only in the cloud, and publish no evaluation of how well their lips follow Bangla speech; none of the open research systems we examined had been trained or evaluated on Bangla. This project builds an open, real-time conversational avatar that speaks Bangla and runs its avatar on a laptop. The user speaks Bangla in a web browser, a speech-to-speech agent built on Google Gemini replies in Bangla, and a 2D avatar speaks the reply with synchronised lip movement.\\
+
+\noindent
+We chose SyncTalk\_2D as the avatar model because it is small and fast enough for a laptop, and confirmed the choice by testing published lip-sync systems on the same Bangla clip. We adapted it to Bangla with Bangla training video, a Bangla-trained lip-sync expert and streaming audio features. While doing so we found four gaps in the model that limited its performance. The most serious was that its mouth mask left the jaw visible, so the model copied mouth movement from the input video instead of following the audio: its mouth moved in 41\% of frames when the audio was silent. Our improved model, \textbf{Alapon}, moves in 0.1\%. Driven by six Bangla speakers it had never heard, its mouth opens 2.3 times wider on \bn{আ} than on \bn{প}/\bn{ব}/\bn{ম}, against 1.7 times before the change. Its training data overlapped the test clip, so its test-clip scores are being re-measured after a clean retrain.\\
+
+\noindent
+We then applied the same silence test to six published systems on Bangla video and on the public English dataset HDTF. Five of the six leaked on at least one dataset, moving their mouths in up to 46\% of silent frames, and the standard lip-sync metric did not detect it; it even scored generated video above real video. These findings are being prepared as a journal paper.\\
+
+\noindent
+The completed system runs Alapon, a 49~MB model that renders at 30 frames per second on a laptop RTX 3050 using 0.3~GB of GPU memory, and answers within 1.5--2 seconds. Real-time Bangla avatar conversation is therefore feasible on consumer hardware, with applications in education, public services and accessibility.

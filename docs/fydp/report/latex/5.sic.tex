@@ -1,0 +1,429 @@
+\chapter{Standards and Design Constraints}
+
+This chapter relates the project to professional and ethical standards, describes the constraints that shaped its design, analyses its cost, and shows that it constitutes a complex engineering problem.
+
+\section{Compliance with the Standards}
+The system aligns with established professional and ethical standards, including the ACM Code of Ethics and Professional Conduct, the ASME Code of Ethics and the IEEE Code of Ethics. The following sections set out the specific principles that apply.
+
+\subsection{Software Standards}
+The following software standards are in line with the scope of the system.\\
+
+
+\textbf{ACM Code of Ethics and Professional Conduct -- Principle 2.1: Strive to achieve high quality in both the processes and products of professional work}
+
+\noindent
+The system uses established models, careful adaptation and systematic testing, and every result reported is measured with a documented, repeatable procedure.
+
+\vspace{0.5cm}
+
+
+\textbf{ACM Code of Ethics -- Principle 2.5: Give comprehensive and thorough evaluations of computer systems and their impacts, including possible risks}
+
+\noindent
+The system is evaluated on lip-sync accuracy, mouth movement during silence, reconstruction quality, Bangla sounds, speed and response time, against six published checkpoints on two datasets, and its limitations are reported explicitly (Section~\ref{sec:limitation}).
+
+\vspace{0.5cm}
+
+
+\textbf{ACM Code of Ethics -- Principle 2.7: Foster public awareness and understanding of computing, related technologies, and their consequences}
+
+\noindent
+By documenting how the avatar works, what it can and cannot do, and how talking-head metrics can mislead, the project promotes understanding of these technologies and their impacts.
+
+\vspace{0.5cm}
+
+
+\textbf{ACM Code of Professional Responsibilities -- Code 2.2: Maintain high standards of professional competence, conduct, and ethical practice}
+
+\noindent
+The team followed ethical practice throughout the project.
+
+\vspace{0.5cm}
+
+
+\textbf{ACM Code of Professional Responsibilities -- Code 2.9: Design and implement systems that are robustly and usably secure}
+
+\noindent
+Access to the system is controlled by session tokens, and the design aims to prevent misuse of the avatar and to remain intuitive and safe to operate.
+
+\vspace{0.5cm}
+
+
+\textbf{IEEE Code of Ethics -- Clause 3: Be honest and realistic in stating claims or estimates based on available data}
+
+\noindent
+Every performance figure in this report is measured, and its source is recorded. Where an earlier estimate was not supported by measurement, such as the end-to-end latency figure of the FYDP-1 design, it has been replaced with measured values. Where a result has a known weakness, such as the training data that overlapped the test frames, or an expectation that the experiments did not support, that is stated.
+
+\vspace{0.5cm}
+
+
+\textbf{IEEE Code of Ethics -- Clause 6: Maintaining technical competence in software and hardware}
+
+\noindent
+The solution lies within the team's field of study, Computer Science and Engineering.
+
+\vspace{0.5cm}
+
+
+\textbf{Fundamental Canons of ASME Code 2: Engineers shall perform services only in the areas of their competence}
+
+\noindent
+The project draws on machine learning, deep learning, computer vision and real-time systems, all within the team's discipline of Computer Science and Engineering.
+
+
+
+\subsection{Hardware Standards}
+
+The following hardware standards are in line with the scope of the system.\\
+
+
+\textbf{ASME Code of Ethics -- Fundamental Canon 2: Engineers shall perform services only in areas of their competence}
+
+\noindent
+The project uses consumer GPUs and cloud GPU resources that match the team's expertise in machine learning and neural rendering.
+
+\vspace{0.5cm}
+
+
+\textbf{ASME Code of Ethics -- Fundamental Canon 1: Engineers shall hold paramount the safety, health, and welfare of the public}
+
+\noindent
+Training runs on cloud GPUs and the system runs on an ordinary laptop, so it poses no particular physical risk. The project is not intended for safety-critical use without further validation.
+
+\vspace{0.5cm}
+
+
+\textbf{IEEE Code of Ethics -- Clause 1: Hold paramount the safety, health, and welfare of the public}
+
+\noindent
+The hardware used is standard consumer and cloud computing equipment and poses no direct physical risk to the public.
+
+\vspace{0.5cm}
+
+
+\textbf{IEEE Code of Ethics -- Clause 6: Maintain and improve technical competence}
+
+\noindent
+Hardware choices are documented and measured, for example the choice of a laptop-class GPU as the runtime target, and the team worked within its technical training.
+
+
+\subsection{Communication Standards}
+
+The following communication standards are in line with the scope of the system.\\
+
+
+\textbf{ACM Code of Ethics -- Principle 1.3: Be honest and trustworthy}
+
+\noindent
+The methodology, dataset limitations and model assumptions are documented in this report and in the project's code, including results that did not support our initial expectations (Sections~\ref{sec:leakage} and~\ref{sec:xlsr}).
+
+\vspace{0.5cm}
+
+
+\textbf{ACM Code of Ethics -- Principle 2.3: Know and respect existing rules pertaining to professional work}
+
+\noindent
+The project follows applicable rules on data handling, privacy and intellectual property. The Bangla corpus is used for research only and is not redistributed until the licences of its source recordings have been traced.
+
+\vspace{0.5cm}
+
+
+\textbf{IEEE Code of Ethics -- Clause 5: Improve the understanding of technology, its appropriate application, and potential consequences}
+
+\noindent
+The project provides documentation and demonstration videos explaining how the system works, its intended uses and its limitations, particularly for a low-resource language. The performance gaps found in SyncTalk\_2D and the weaknesses found in the standard evaluation are being reported to the research community through the journal paper.
+
+
+\subsection{Societal Standards}
+
+The following societal standards are in line with the scope of the system.\\
+
+
+\textbf{ACM Code of Ethics -- Principle 1.1: Contribute to society and to human well-being}
+
+\noindent
+The system serves Bangla speakers, who are underserved by current AI technology, and is designed to be deployable where resources are limited.
+
+\vspace{0.5cm}
+
+
+\textbf{ACM Code of Ethics -- Principle 1.6: Respect privacy}
+
+\noindent
+The avatar is trained on video of a speaker who consented to its use \todo{confirm: the \texttt{redwan} recording is of team member Sheikh Redwanul Islam, recorded with his consent}. The system performs no identity recognition or surveillance. The user's speech is sent to the Gemini API to generate replies, which users should be told.
+
+\vspace{0.5cm}
+
+
+\textbf{IEEE Code of Ethics -- Clause 10: Assist colleagues and co-workers in their professional development}
+
+\noindent
+The project's source code and evaluation tools are documented so that others can reproduce and build on the work. The Bangla corpus will be released once the licences of its source recordings have been traced.
+
+
+
+
+\section{Design Constraints}
+
+The design of the Real-Time Bangla Speech-Driven Avatar Generation system was shaped by several practical and contextual constraints. The subsections below explain the key constraints.\\
+
+\subsection{Economic Constraint}
+High-fidelity talking-head models usually need large GPUs, large datasets and cloud servers, which small institutions cannot afford. The system addresses this directly: its avatar model, Alapon, is 49~MB, renders in real time on a consumer laptop GPU using 0.3~GB of memory, and needs no cloud GPU at runtime. Training uses modest cloud GPU time once per avatar. All tools and libraries are free or open-source, and the training data is locally collected Bangla video.
+
+\subsection{Ethical Constraint}
+A system that generates realistic facial movement from speech carries risks of impersonation, deepfakes and privacy violation. To limit these, the avatar is trained only on footage of a speaker who consented, the system is intended for controlled and transparent use, and it is not used to produce false or unauthorised representations of real people. The Bangla corpus was assembled from publicly available recordings for research; the speakers did not individually consent, so the corpus is not redistributed, and its release depends on tracing the source licences. Informed consent, anonymisation where necessary, and responsible data processing guide any further data collection, including the planned human evaluation.
+
+
+\subsection{Social Constraint}
+
+Language inclusivity and cultural representation are central. Current talking-head systems focus on English, which disadvantages speakers of low-resource languages such as Bangla. This system is built specifically for Bangla users, with attention to Bangla phonetics, formal register and speech rhythm.\\
+
+\noindent
+Bangla also varies by dialect in pronunciation, intonation and vocabulary, which makes a single model representative of all speakers difficult to build from limited data. The corpus includes 24 speakers, but it has not yet been audited for balance across gender, region or speaking style.
+
+
+\section{Cost Analysis}
+The project was planned to be cost-effective and feasible in an academic setting. Because it is almost entirely software-based, its financial requirements are low.
+
+The main considerations of cost in the project are as follows:
+
+\begin{itemize}
+    \item \textbf{Hardware Resources:}\\
+    The system runs on a personal laptop. The avatar needs a CUDA-capable GPU, but a consumer laptop GPU is sufficient; no specialised hardware is required.
+
+    \item \textbf{Software Resources:}\\
+    All development tools, programming languages, deep learning frameworks and audio--visual libraries are free or open-source, so there are no licensing costs.
+
+    \item \textbf{Data and Experimentation:}\\
+    Training and evaluation use locally collected Bangla video and a public benchmark (HDTF), so no paid datasets are needed.
+
+    \item \textbf{Operational Costs:}\\
+    The avatar runs locally. The conversational model is accessed through the Gemini API.
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\caption{Detailed Cost}
+\small
+\begin{tabularx}{\textwidth}{|l|l|X|l|l|}
+\hline
+\textbf{Environment} & \textbf{Component} & \textbf{Used Component} & \textbf{Price} & \textbf{Training} \\ \hline
+
+\multirow{3}{*}{Local}
+& CPU & AMD Ryzen 7 5800H & Owned & \multirow{3}{*}{N/A} \\ \cline{2-4}
+& GPU & RTX 3050 Laptop, 4 GB & Owned &  \\ \cline{2-4}
+& RAM & 8 GB RAM & Owned &  \\ \hline
+
+\multirow{4}{*}{Cloud}
+& Google Colab Pro & A100, L4, T4 & \todo{spend} & \multirow{4}{*}{\todo{hours}} \\ \cline{2-4}
+& Kaggle & T4 & Free &  \\ \cline{2-4}
+& Storage & Google Drive & Free &  \\ \cline{2-4}
+& Conversational model & Google Gemini API & \todo{cost} &  \\ \hline
+
+\end{tabularx}
+\end{table}
+
+
+\noindent
+The cost analysis confirms that the project can be completed with very little expenditure, which makes it appropriate and sustainable for an undergraduate final year design project.
+
+
+
+
+
+
+\section{Complex Engineering Problem}
+\subsection{Complex Problem Solving}
+
+Whether a problem is a complex engineering problem is determined by checking whether it satisfies the attributes P1 to P7.\\
+
+\noindent
+\textbf{P1: Depth of Knowledge Required}
+
+\noindent
+P1 is satisfied when the project requires one or more of the knowledge profiles K3, K4, K5, K6 or K8. The profiles that apply to this project are evaluated below.
+
+\noindent
+\textbf{K1: Engineering Fundamentals}
+\noindent
+The project uses mathematics, signal processing and computer science: audio is represented and transformed mathematically, and engineering principles govern real-time synchronisation and control.
+
+\noindent
+\textbf{K2: Discipline-Specific Knowledge}
+\noindent
+Core computer science applies: machine learning, computer vision, data structures, algorithms and software architecture, with frame-based video rendering and audio processing as key discipline-specific elements.
+
+\noindent
+\textbf{K3: Specialist Knowledge}
+\noindent
+Audio-to-visual speech synthesis requires specialist knowledge of deep learning. Lip synchronisation, phoneme-to-viseme mapping, facial landmark modelling and low-resource Bangla data make the problem highly specialised.
+
+\noindent
+\textbf{K4: Design and Development}
+\noindent
+The project required systematic engineering design: end-to-end pipeline modelling, system architecture design and iterative development, with trade-offs between realism, latency and computation.
+
+\noindent
+\textbf{K5: Engineering Tools, Software \& Techniques}
+\noindent
+Modern tools were used (Python, PyTorch, computer vision and audio processing libraries), together with optimisation techniques to achieve real-time execution.
+
+\noindent
+\textbf{K6: Impact of Engineering on Society \& Environment}
+\noindent
+The project considers the ethical and social consequences of deepfakes, identity, privacy and responsible AI.
+
+\noindent
+\textbf{K7: Management, Finance \& Project Management}
+\noindent
+Planning, scheduling, version control and time management were used throughout, within limited resources.
+
+\noindent
+\textbf{K8: Lifelong Learning:}
+\noindent
+The field changes rapidly; new techniques, tools and research were studied and integrated during development.
+
+\vspace{1em}
+
+\noindent
+P1 is satisfied, as K3, K4, K5, K6, K7 and K8 all apply.\\
+
+\noindent
+\textbf{P2: Range of Conflicting Requirements}
+\noindent
+The project involved many conflicting requirements. A smaller model renders faster but risks poorer lip-sync; a larger one looks better but cannot run on a laptop. A longer end-of-turn wait avoids cutting the user off but makes the system feel slower. Emitting video frames earlier reduces latency but risks lip frames ahead of their audio. Identity preservation competes with generalisation to new speakers. These were balanced through measurement and testing. P2 is satisfied.
+
+\vspace{0.7em}
+
+\noindent
+\textbf{P3: Depth of Analysis Required}
+\noindent
+The problem has no simple answer. Many methods exist for audio-driven lip synchronisation (viseme-based, convolutional, transformer and diffusion models), but none targets real-time Bangla lip-sync on limited hardware. The solution required a comparative benchmark of published systems, adaptation of the selected model, a causal diagnosis of why its mouth moved without audio, and an analysis of why the standard metric could not detect it. P3 is satisfied.
+
+
+\vspace{0.7em}
+
+\noindent
+\textbf{P4: Familiarity of Issues}
+\noindent
+Real-time Bangla lip synchronisation raises issues not covered in standard coursework: audio--visual synchronisation under real-time constraints, streaming audio features that must match offline extraction, Bangla phoneme-to-viseme mapping, low-resource language data, identity-preserving generation, and the reliability of evaluation metrics. P4 is satisfied.
+
+\vspace{0.7em}
+
+\noindent
+\textbf{P5: Extent of Applicable Codes}
+\noindent
+The project must follow professional and ethical codes (the ACM and IEEE Codes of Ethics and responsible-AI principles), with attention to data privacy, consent for facial data, and responsible use of AI-generated media. P5 is satisfied.
+
+\vspace{0.7em}
+
+\noindent
+\textbf{P6: Extent of Stakeholder Involvement}
+\noindent
+Stakeholders include end users, educators and other deploying institutions, developers, researchers and the wider public, with differing needs for visual realism, real-time performance, ethical use and reliability. P6 is satisfied.
+
+\vspace{0.7em}
+
+\noindent
+\textbf{P7: Interdependence}
+\noindent
+The audio processing, lip-motion model, rendering server, conversational agent and real-time media layer are tightly interdependent and must stay synchronised; latency, inference speed and ethical constraints follow directly from the core problem. P7 is satisfied.
+
+
+\begin{center}
+    \begin{table}[ht]
+        \centering
+        \caption{Mapping with complex problem solving.}
+        \begin{tabular}{|p{0.12\textwidth}|p{0.12\textwidth}|p{0.12\textwidth}|p{0.12\textwidth}|p{0.12\textwidth}|p{0.12\textwidth}|p{0.12\textwidth}|}
+        \hline
+        P1& P2& P3& P4& P5& P6& P7\\
+        Depth of Knowledge & Range of Conflicting Requirements & Depth of Analysis & Familiarity of Issues & Extent of Applicable Codes & Extent of Stakeholder Involvement & Inter-dependence\\
+        \hline
+        $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$\\
+        &&&&&&\\
+        \hline
+        \end{tabular}
+        \label{tab:p_solve}
+    \end{table}
+\end{center}
+
+
+\subsection{Engineering Activities}
+
+The engineering activities A1 to A5 were addressed through systematic analysis, design, implementation and evaluation, as outlined below.\\
+
+\noindent
+\textbf{A1: Range of Resources}
+
+\noindent
+The solution combines many resources: speech input, audio processing, a deep-learning lip-sync model, a rendering server, a conversational model and a real-time media layer, all of which must be coordinated to produce synchronised audio and video. Responsible data use, privacy and deployment constraints are also in scope. A1 is satisfied.
+
+\vspace{0.5em}
+
+\noindent
+\textbf{A2: Innovation}
+
+\noindent
+The project applies audio-driven facial animation to Bangla speech, which had not been done in the open systems we reviewed. It identifies and closes four performance gaps in a publicly available model, one of which made it copy mouth shape instead of listening; introduces a Bangla sound-level evaluation; and shows, with a silent-audio test and a real-video reference, that published systems leak and that the standard metric cannot detect it. A2 is satisfied.
+
+
+\vspace{0.5em}
+
+\noindent
+\textbf{A3: Level of Interaction}
+
+\noindent
+Speech processing, deep-learning inference, rendering and synchronisation interact closely, and balancing computation, visual quality and responsiveness required continual adjustment across all of them. A3 is satisfied.
+
+\vspace{0.5em}
+
+\noindent
+\textbf{A4: Consequences for Society and Environment}
+
+\noindent
+Realistic talking avatars can improve education, communication and access to services, but also raise concerns about misuse and misinformation, which the project addresses through consent, controlled use and transparency. Because the system runs on existing consumer hardware, it avoids new hardware and limits its environmental impact. A4 is satisfied.
+
+\vspace{0.5em}
+
+\noindent
+\textbf{A5: Familiarity}
+
+\noindent
+The problem requires knowledge beyond standard coursework: deep-learning speech-driven synthesis, real-time streaming systems and evaluation methodology. A5 is satisfied.
+
+\vspace{0.8em}
+
+\noindent
+\textbf{Conclusion}
+
+\noindent
+These activities show a structured and systematic approach to a complex engineering problem, combining advanced AI techniques, real-time system design, iterative optimisation and ethical awareness.
+
+
+
+
+\begin{center}
+    \begin{table}[ht]
+        \centering
+                \caption{Mapping with complex engineering activities.}
+
+        \begin{tabular}{|p{0.18\textwidth}|p{0.18\textwidth}|p{0.18\textwidth}|p{0.18\textwidth}|p{0.18\textwidth}|}
+        \hline
+        A1& A2& A3& A4& A5\\
+        Range of resources & Innovation & Level of Interaction & Consequences for society and environment & Familiarity\\
+        \hline
+        $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$ & $\sqrt{}$\\
+        &&&&\\
+        \hline
+        \end{tabular}
+        \label{tab:e_act}
+    \end{table}
+\end{center}
+
+
+\section{Summary}
+
+This chapter related the Real-Time Bangla Speech-Driven Avatar Generation system to the relevant software, hardware, communication and societal standards, and examined the economic, ethical and social constraints that shaped its design.\\
+
+\noindent
+The cost analysis shows that the project can be delivered with very little expenditure. Finally, the project was shown to be a complex engineering problem, because it integrates real-time AI processing, low-resource language adaptation, neural rendering on consumer hardware, and the evaluation of the models it depends on.

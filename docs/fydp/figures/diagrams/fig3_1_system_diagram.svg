@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="500" height="420" viewBox="0 0 500 420" role="img" aria-label="System diagram: user, browser client, token server, LiveKit Cloud, Bangla agent, Gemini, and the avatar server running Alapon." font-family="Atkinson Hyperlegible, Segoe UI, sans-serif" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#121A2A"/></marker>
+    <marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2A78D6"/></marker>
+  </defs>
+  <rect width="500" height="420" fill="#ffffff"/>
+  <!-- user -->
+  <rect x="108" y="29" width="184" height="42" rx="6" fill="#ffffff" stroke="#A8A69D" stroke-width="1.2"/>
+  <text x="200" y="55" font-size="14" fill="#121A2A" text-anchor="middle">User</text>
+  <!-- browser -->
+  <rect x="108" y="107" width="184" height="42" rx="6" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2"/>
+  <text x="200" y="125" font-size="13" fill="#121A2A" text-anchor="middle">Browser client</text>
+  <text x="200" y="142" font-size="11.5" fill="#52514E" text-anchor="middle">mic, avatar video, transcript</text>
+  <!-- token -->
+  <rect x="340" y="107" width="136" height="42" rx="6" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2"/>
+  <text x="408" y="125" font-size="13" fill="#121A2A" text-anchor="middle">Token server</text>
+  <text x="408" y="142" font-size="11.5" fill="#52514E" text-anchor="middle">(Flask)</text>
+  <!-- livekit (cloud, dashed) -->
+  <rect x="108" y="185" width="184" height="42" rx="6" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="200" y="203" font-size="13" fill="#121A2A" text-anchor="middle">LiveKit Cloud</text>
+  <text x="200" y="220" font-size="11.5" fill="#52514E" text-anchor="middle">real-time audio and video</text>
+  <!-- agent -->
+  <rect x="108" y="263" width="184" height="42" rx="6" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2"/>
+  <text x="200" y="281" font-size="13" fill="#121A2A" text-anchor="middle">Bangla agent</text>
+  <text x="200" y="298" font-size="11.5" fill="#52514E" text-anchor="middle">LiveKit Agents, Silero VAD</text>
+  <!-- gemini (cloud, dashed) -->
+  <rect x="340" y="263" width="136" height="42" rx="6" fill="#F3F2EF" stroke="#A8A69D" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="408" y="281" font-size="13" fill="#121A2A" text-anchor="middle">Gemini 3.1 Flash Live</text>
+  <text x="408" y="298" font-size="11.5" fill="#52514E" text-anchor="middle">(cloud API)</text>
+  <!-- avatar (Alapon) -->
+  <rect x="108" y="341" width="184" height="42" rx="6" fill="#E3EEFB" stroke="#2A78D6" stroke-width="1.8"/>
+  <text x="200" y="359" font-size="13" fill="#1C5CAB" text-anchor="middle">Avatar server</text>
+  <text x="200" y="376" font-size="11.5" fill="#1C5CAB" text-anchor="middle"><tspan font-weight="700">Alapon</tspan> on the laptop GPU</text>
+  <!-- arrows -->
+  <g stroke="#121A2A" stroke-width="1.6" fill="none">
+    <line x1="200" y1="73" x2="200" y2="105" marker-start="url(#a1)" marker-end="url(#a1)"/>
+    <line x1="294" y1="128" x2="338" y2="128" marker-start="url(#a1)" marker-end="url(#a1)"/>
+    <line x1="200" y1="151" x2="200" y2="183" marker-start="url(#a1)" marker-end="url(#a1)"/>
+    <line x1="200" y1="229" x2="200" y2="261" marker-start="url(#a1)" marker-end="url(#a1)"/>
+    <line x1="294" y1="284" x2="338" y2="284" marker-start="url(#a1)" marker-end="url(#a1)"/>
+  </g>
+  <line x1="200" y1="307" x2="200" y2="339" stroke="#2A78D6" stroke-width="1.8" marker-start="url(#b1)" marker-end="url(#b1)"/>
+  <g font-size="11.5" fill="#52514E">
+    <text x="208" y="93">speech / avatar</text>
+    <text x="316" y="121" text-anchor="middle">token</text>
+    <text x="208" y="171">audio / video</text>
+    <text x="208" y="249">audio / video</text>
+    <text x="316" y="277" text-anchor="middle">speech</text>
+    <text x="208" y="327" fill="#1C5CAB">reply audio / frames</text>
+  </g>
+  <text x="250" y="408" font-size="11.5" fill="#52514E" text-anchor="middle">Dashed border: cloud service. Blue: Alapon, the avatar model, running on the laptop.</text>
+</svg>
